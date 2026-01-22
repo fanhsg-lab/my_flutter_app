@@ -15,6 +15,28 @@ class LocalDB {
 // --- REPAIR TOOL: FORCE LINK WORDS TO CHAPTER 6 ---
   // --- EMERGENCY TOOL: DOWNLOAD WORDS FROM CLOUD ---
 // --- FINAL TOOL: DOWNLOAD ALL WORDS FOR CHAPTER 6 ---
+
+// Get the most urgent words that need review
+  Future<List<Map<String, dynamic>>> getDueWords({int limit = 10}) async {
+    final db = await database;
+    final now = DateTime.now().toIso8601String();
+
+    // 1. SELECT only Learning/Consolidating
+    // 2. WHERE they are Due (next_due_at <= Now)
+    // 3. ORDER BY next_due_at ASC (Oldest overdue first -> Queue system)
+    final List<Map<String, dynamic>> maps = await db.rawQuery('''
+      SELECT * FROM user_progress 
+      WHERE status IN ('learning', 'consolidating') 
+        AND next_due_at <= ? 
+      ORDER BY next_due_at ASC 
+      LIMIT ?
+    ''', [now, limit]);
+
+    return maps;
+  }
+
+
+
   Future<void> forceDownloadChapter6() async {
     final db = await instance.database;
     final supabase = Supabase.instance.client;

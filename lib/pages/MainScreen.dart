@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; // 1. Need this for orientation control
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme.dart'; 
-import '../local_db.dart'; // Import Local DB
+import '../local_db.dart'; 
 import 'gameMode.dart'; 
 import 'bubble.dart'; 
 import 'statistics.dart'; 
@@ -26,30 +27,29 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void initState() {
     super.initState();
-    // ✅ FIX: This runs ONLY ONCE when the app starts. No more loops!
+    
+    // 🚨 2. LOCK TO VERTICAL (PORTRAIT)
+    // This forces the screen to rotate back instantly when you return from the game.
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+    ]);
+
     _initialLoad();
   }
 
   Future<void> _initialLoad() async {
-    // 1. Try to load local data immediately (Fast!)
     await _fetchDashboardData();
 
-    // 2. If the phone is empty (First Run), we MUST wait for Sync
     if (_lessons.isEmpty) {
       if (mounted) setState(() => _isLoading = true);
-      
       debugPrint("📱 Local DB is empty. Starting First-Time Sync...");
       try {
         await LocalDB.instance.syncEverything();
       } catch (e) {
         debugPrint("⚠️ First Sync Error: $e");
       }
-      
-      // 3. Sync done, fetch data again
       if (mounted) await _fetchDashboardData();
     } else {
-      // 3b. If we already have data, sync quietly in background
-      // This prevents the "Loading" spinner from blocking the user
       debugPrint("🔄 Starting Background Sync...");
       LocalDB.instance.syncEverything().then((_) {
          debugPrint("✅ Background Sync Complete. Refreshing UI.");
@@ -60,11 +60,7 @@ class _MainScreenState extends State<MainScreen> {
 
   Future<void> _fetchDashboardData() async {
     try {
-      // ✅ FIX: Wrap in try-catch.
-      // If the Sync is writing 1000 words, the DB might be "LOCKED".
-      // If locked, we catch the error and keep showing old data (instead of 0).
       final data = await LocalDB.instance.getDashboardLessons();
-      
       if (mounted) {
         setState(() {
           _lessons = data;
@@ -73,8 +69,6 @@ class _MainScreenState extends State<MainScreen> {
       }
     } catch (e) {
       debugPrint("⚠️ UI Read Error (DB Locked?): $e");
-      // We do NOT update state here, so the user sees the old valid stats 
-      // instead of a blank screen.
     }
   }
 
@@ -202,7 +196,11 @@ class _MainScreenState extends State<MainScreen> {
 
                                 if (route != null) {
                                   await Navigator.push(context, route);
-                                  // Refresh immediately upon return
+                                  
+                                  // 🚨 3. RE-LOCK WHEN COMING BACK
+                                  // Just in case the game unlocked it, we lock it again here.
+                                  SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+                                  
                                   _fetchDashboardData();
                                 }
                               },

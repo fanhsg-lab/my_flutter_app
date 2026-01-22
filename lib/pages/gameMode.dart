@@ -20,6 +20,7 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
   
   List<Map<String, String>> _vocabulary = [];
   bool _isLoading = true;
+  bool _isSessionComplete = false; // 🏁 To track when lesson is finished
 
   late Ticker _ticker;
   Size? _screenSize;
@@ -45,17 +46,17 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
     _fetchLessonWords(); 
 
     _ticker = createTicker((elapsed) {
-      if (_screenSize != null && !_isLoading && _vocabulary.isNotEmpty) {
+      if (_screenSize != null && !_isLoading && !_isSessionComplete && _vocabulary.isNotEmpty) {
         _updatePhysics();
       }
     });
     _ticker.start();
   }
 
- Future<void> _fetchLessonWords() async {
+  // 1. FETCH WORDS FOR SPECIFIC LESSON
+  Future<void> _fetchLessonWords() async {
     try {
       final supabase = Supabase.instance.client;
-      // Get all columns
       final rawResponse = await supabase
           .from('words')
           .select() 
@@ -65,28 +66,20 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
       
       for (var row in rawResponse) {
         String id = row['id'].toString(); 
-        String es_val = ""; // Value from Spanish column
-        String gr_val = ""; // Value from English/Greek column
+        String es_val = ""; 
+        String gr_val = ""; 
 
-        // 1. Get Spanish Value
         if (row.containsKey('es')) es_val = row['es'].toString();
         else if (row.containsKey('spanish')) es_val = row['spanish'].toString();
 
-        // 2. Get Greek/English Value
         if (row.containsKey('en')) gr_val = row['en'].toString();
         else if (row.containsKey('english')) gr_val = row['english'].toString();
-        else if (row.containsKey('gr')) gr_val = row['gr'].toString(); // Just in case you add 'gr' col later
+        else if (row.containsKey('gr')) gr_val = row['gr'].toString();
 
         if (es_val.isNotEmpty && gr_val.isNotEmpty) {
-          // --- FLIPPING LOGIC ---
-          // 'question': The word on the balls
-          // 'answer': The target word at the top
-          
           if (widget.isReversed) {
-            // Gr -> Esp (Balls have Greek, Target is Spanish)
             loadedWords.add({'id': id, 'question': gr_val, 'answer': es_val});
           } else {
-            // Esp -> Gr (Balls have Spanish, Target is Greek)
             loadedWords.add({'id': id, 'question': es_val, 'answer': gr_val});
           }
         }
@@ -96,6 +89,7 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
         setState(() {
           _vocabulary = loadedWords;
           _isLoading = false;
+          if (_vocabulary.isEmpty) _isSessionComplete = true; // Handle empty lesson
         });
       }
     } catch (e) {
@@ -103,8 +97,6 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
       if (mounted) setState(() => _isLoading = false);
     }
   }
-
-
 
   @override
   void dispose() {
@@ -123,6 +115,7 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
   }
 
   void _pickNewTarget() {
+     if (_vocabulary.isEmpty) return;
      setState(() {
        _targetWordPair = _vocabulary[_random.nextInt(_vocabulary.length)];
      });
@@ -130,6 +123,7 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
 
   void _addNewBall({bool forceCorrectAnswer = false}) {
     if (_screenSize == null || _targetWordPair == null) return;
+    if (_vocabulary.isEmpty) return;
 
     Set<String> activeWords = _balls.map((b) => b.wordPair['question']!).toSet();
     Map<String, String> wordForBall;
@@ -186,25 +180,45 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
 
   void _handleBallTap(GameBall tappedBall) {
     bool isCorrect = tappedBall.wordPair['question'] == _targetWordPair!['question'];
-    String correctAnswer = _targetWordPair!['question']!; // The correct ball text
+    String correctAnswer = _targetWordPair!['question']!; 
     String wordId = _targetWordPair!['id']!;
 
-    setState(() {
-      if (isCorrect) {
+    if (isCorrect) {
+      // ✅ LOGIC: Correct Answer
+      setState(() {
         _score += 10;
-        _showFeedback = false; 
-      } else {
-        _triggerWrongFeedback(correctAnswer);
+        _showFeedback = false;
+        
+        // 1. Remove the clicked ball
+        _balls.removeWhere((ball) => ball.id == tappedBall.id);
+
+        // 2. 🚨 REMOVE WORD FROM POOL so it doesn't repeat!
+        _vocabulary.removeWhere((w) => w['id'] == wordId);
+      });
+
+      // 3. CHECK WIN (Empty Pool)
+      if (_vocabulary.isEmpty) {
+        setState(() => _isSessionComplete = true);
+        return;
       }
+
+      // 4. Continue Game with REMAINING words
       _pickNewTarget();
-      _balls.removeWhere((ball) => ball.id == tappedBall.id);
       _respawnWithAntiCheat();
-    });
+
+    } else {
+      // ❌ LOGIC: Wrong Answer
+      _triggerWrongFeedback(correctAnswer);
+      setState(() {
+        _pickNewTarget();
+        _balls.removeWhere((ball) => ball.id == tappedBall.id);
+        _respawnWithAntiCheat();
+      });
+    }
   }
 
   void _triggerWrongFeedback(String correctBallText) {
     _feedbackTimer?.cancel();
-    // Target (Top) : Answer (Ball)
     String topWord = _targetWordPair!['answer']!;
 
     setState(() {
@@ -218,6 +232,8 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
   }
 
   void _respawnWithAntiCheat() {
+    if (_vocabulary.isEmpty) return; // Safety
+
     bool targetAlreadyExists = _balls.any((b) => b.wordPair['question'] == _targetWordPair!['question']);
     if (targetAlreadyExists) {
       _addNewBall(forceCorrectAnswer: false);
@@ -288,12 +304,38 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
 
   @override
   Widget build(BuildContext context) {
+    // 🏁 2. HANDLE WIN SCREEN (When all words are done)
+    if (_isSessionComplete) {
+       return Scaffold(
+        backgroundColor: AppColors.background,
+        appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, leading: const BackButton(color: Colors.white)),
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.star, size: 80, color: Colors.amber),
+              const SizedBox(height: 24),
+              Text("Lesson Complete!", style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 12),
+              Text("Score: $_score", style: const TextStyle(color: Colors.white70, fontSize: 24)),
+              const SizedBox(height: 40),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 16)),
+                child: const Text("Back to Lessons", style: TextStyle(color: Colors.white, fontSize: 18)),
+              )
+            ],
+          ),
+        ),
+      );
+    }
+
     return Scaffold(
       backgroundColor: AppColors.background, 
       body: _isLoading 
         ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
         : _vocabulary.isEmpty 
-           ? Center(child: Text("No words in this lesson!", style: TextStyle(color: Colors.white)))
+           ? const Center(child: Text("No words in this lesson!", style: TextStyle(color: Colors.white)))
            : LayoutBuilder(
             builder: (context, constraints) {
               if (constraints.maxWidth < constraints.maxHeight) {
@@ -342,21 +384,18 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
                       );
                     }).toList(),
 
+                    // TOP BAR
                     Positioned(
                       top: 0, left: 0, right: 0,
                       child: Container(
                         height: 80, 
                         padding: const EdgeInsets.symmetric(horizontal: 30),
                         decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [Colors.black.withOpacity(0.9), Colors.transparent], 
-                            begin: Alignment.topCenter, 
-                            end: Alignment.bottomCenter
-                          )
+                          gradient: LinearGradient(colors: [Colors.black.withOpacity(0.9), Colors.transparent], begin: Alignment.topCenter, end: Alignment.bottomCenter)
                         ),
                         child: Stack(
                           children: [
-                            Align(alignment: Alignment.centerLeft, child: Text("Score: $_score", style: const TextStyle(color: AppColors.primary, fontSize: 24, fontWeight: FontWeight.bold))),
+                            Align(alignment: Alignment.centerLeft, child: Text("Left: ${_vocabulary.length}", style: const TextStyle(color: AppColors.primary, fontSize: 24, fontWeight: FontWeight.bold))),
                             
                             Align(
                               alignment: Alignment.center,
@@ -373,6 +412,7 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
                       ),
                     ),
 
+                    // FEEDBACK
                     IgnorePointer(
                       ignoring: true,
                       child: Center(
@@ -408,6 +448,6 @@ class GameBall {
   Offset position;
   Offset velocity;
   final Color color;
-  final Map<String, String> wordPair; // keys: 'id', 'question', 'answer'
+  final Map<String, String> wordPair; 
   GameBall({required this.id, required this.position, required this.velocity, required this.color, required this.wordPair});
 }

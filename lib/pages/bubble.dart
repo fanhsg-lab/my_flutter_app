@@ -1,10 +1,10 @@
-import 'dart:math';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme.dart';
-import '../local_db.dart'; // Required for Offline DB
+import '../local_db.dart'; 
 
 class BubblePage extends StatefulWidget {
   final int lessonId;
@@ -20,16 +20,14 @@ class BubblePage extends StatefulWidget {
   State<BubblePage> createState() => _BubblePageState();
 }
 
-// ✅ MIXIN ADDED: WidgetsBindingObserver (To detect app minimize/kill)
 class _BubblePageState extends State<BubblePage>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+    with TickerProviderStateMixin, WidgetsBindingObserver { 
   List<Map<String, dynamic>> _queue = [];
   final List<Map<String, dynamic>> _pendingUpdates = [];
 
   bool _isLoading = true;
   double _userLearningRate = 2.5;
-  double _userPenaltyRate = 0.5;
-
+  
   final FlutterTts _flutterTts = FlutterTts();
 
   int _currentIndex = 0;
@@ -42,13 +40,18 @@ class _BubblePageState extends State<BubblePage>
 
   late final AnimationController _popController;
   late final Animation<double> _scaleAnimation;
+  
+  // Breathing Animation Controller
+  late final AnimationController _breathingController;
+  
+  // Sparkle Controller
+  late final AnimationController _sparkleController;
+  bool _showSparkles = false;
 
   @override
   void initState() {
     super.initState();
-    // ✅ REGISTER OBSERVER: Watch for app minimization
     WidgetsBinding.instance.addObserver(this);
-
     _loadSessionData();
 
     _popController = AnimationController(
@@ -56,62 +59,63 @@ class _BubblePageState extends State<BubblePage>
       duration: const Duration(milliseconds: 300),
       value: 1.0,
     );
+    
     _scaleAnimation = CurvedAnimation(
       parent: _popController,
       curve: Curves.elasticOut,
       reverseCurve: Curves.easeIn,
     );
+
+    // Setup Breathing Animation (Idle pulse)
+    _breathingController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 2),
+    )..repeat(reverse: true);
+
+    // Setup Sparkle Animation
+    _sparkleController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000), // Longer explosion
+    );
+
     _flutterTts.setLanguage("es-ES");
   }
 
-  // ✅ NEW: Detect if user minimizes the app (Home button / Switch apps)
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
-      //debugPrint("⏸️ App paused/minimized. Saving progress...");
-      _saveSessionToDB(); // Force Save
+      _saveSessionToDB();
     }
   }
 
-  // ✅ UPDATED DISPOSE: Save when user presses "Back"
   @override
   void dispose() {
-    // Unregister observer
     WidgetsBinding.instance.removeObserver(this);
-
     _popController.dispose();
+    _breathingController.dispose(); 
+    _sparkleController.dispose();   
     _flutterTts.stop();
-
-    // 💾 SAFETY SAVE: If they leave the screen, save whatever they did so far
     _saveSessionToDB();
-
     super.dispose();
   }
 
-  // --- SAVE BATCH FUNCTION (Safe to call multiple times) ---
   Future<void> _saveSessionToDB() async {
-    // If nothing to save, stop.
     if (_pendingUpdates.isEmpty) return;
 
-    // 1. Report Card Logic (Optional: Adjusts difficulty)
     int batchCorrect = _pendingUpdates.where((u) => u['isCorrect'] == true).length;
     double accuracy = _pendingUpdates.length > 0 ? batchCorrect / _pendingUpdates.length : 0.0;
     
     if (accuracy >= 0.8) _userLearningRate = (_userLearningRate + 0.05).clamp(1.5, 3.5);
     else if (accuracy <= 0.6) _userLearningRate = (_userLearningRate - 0.05).clamp(1.5, 3.5);
     
-    // Fire and forget profile update (Cloud only)
     try {
        Supabase.instance.client.from('profiles').upsert({
          'id': Supabase.instance.client.auth.currentUser?.id,
          'learning_rate': _userLearningRate
        });
-    } catch (e) { /* ignore offline */ }
+    } catch (e) { }
 
-    // 2. SAVE USING YOUR LOCAL HELPER
-    // Your 'updateProgressLocal' uses ConflictAlgorithm.replace, 
-    // which automatically fixes the "New Lesson" bug.
     List<Map<String, dynamic>> batchToSave = List.from(_pendingUpdates);
     _pendingUpdates.clear();
 
@@ -130,12 +134,9 @@ class _BubblePageState extends State<BubblePage>
       );
     }
     debugPrint("🔔 Ringing the bell: Data changed!");
-    LocalDB.instance.notifyDataChanged(); // <--- RINGS THE BELL
-
+    LocalDB.instance.notifyDataChanged();
     debugPrint("✅ Batch save complete!");
   }
-
-  // ... (Rest of your logic remains exactly the same) ...
 
   void _restartSession() {
     setState(() {
@@ -151,11 +152,7 @@ class _BubblePageState extends State<BubblePage>
 
   Future<void> _loadSessionData() async {
     try {
-      //debugPrint("\n🔵 --- STARTING SESSION LOAD ---");
       final db = await LocalDB.instance.database;
-
-      // 1. QUERY WORDS (Strict ID Sort for Stability)
-      // This ensures we always process words in the same order (1, 2, 3...)
       final wordsData = await db.query(
         'words',
         where: 'lesson_id = ?',
@@ -168,10 +165,9 @@ class _BubblePageState extends State<BubblePage>
         for (var p in progressData) p['word_id'] as int: p,
       };
 
-      // 2. CREATE SORTED BUCKETS
-      List<Map<String, dynamic>> reviewQueue = []; // Ready Reviews
-      List<Map<String, dynamic>> learningQueue = []; // Failed Words
-      List<Map<String, dynamic>> newQueue = []; // Unseen Words
+      List<Map<String, dynamic>> reviewQueue = []; 
+      List<Map<String, dynamic>> learningQueue = []; 
+      List<Map<String, dynamic>> newQueue = []; 
 
       DateTime now = DateTime.now().toUtc();
 
@@ -187,12 +183,8 @@ class _BubblePageState extends State<BubblePage>
 
         Map<String, dynamic> item = {
           'word_id': wordId,
-          'front': widget.isReversed
-              ? (word['en'] as String)
-              : (word['es'] as String),
-          'reveal': widget.isReversed
-              ? (word['es'] as String)
-              : (word['en'] as String),
+          'front': widget.isReversed ? (word['en'] as String) : (word['es'] as String),
+          'reveal': widget.isReversed ? (word['es'] as String) : (word['en'] as String),
           'status': status,
           'strength': (progress?['strength'] as num?)?.toDouble() ?? 0.0,
           'next_due': nextDue,
@@ -201,51 +193,29 @@ class _BubblePageState extends State<BubblePage>
           'total_correct': progress?['total_correct'] ?? 0,
         };
 
-        // Strict Sorting into Groups
         if (status == 'learning') {
           learningQueue.add(item);
-        } else if ((status == 'consolidating' || status == 'learned') &&
-            isTimeUp) {
+        } else if ((status == 'consolidating' || status == 'learned') && isTimeUp) {
           reviewQueue.add(item);
         } else if (status == 'new' || progress == null) {
           newQueue.add(item);
         }
       }
 
-      // 3. BUILD THE QUIZ (The "Recipe")
       List<Map<String, dynamic>> finalSelection = [];
-
-      // STEP A: Take Consolidating (Max 8)
-      // We take them in ID order (or Date order if you preferred, but ID is stable)
       while (finalSelection.length < 8 && reviewQueue.isNotEmpty) {
         finalSelection.add(reviewQueue.removeAt(0));
       }
-
-      // STEP B: Take Learning (Fill up to 10)
-      // If we took 8 Reviews, this adds 2 Learning.
-      // If we took 0 Reviews, this adds 10 Learning.
       while (finalSelection.length < 10 && learningQueue.isNotEmpty) {
         finalSelection.add(learningQueue.removeAt(0));
       }
-
-      // STEP C: Take New (Fill up to 10)
-      // Only happens if we ran out of both Reviews and Learning words.
       while (finalSelection.length < 10 && newQueue.isNotEmpty) {
         finalSelection.add(newQueue.removeAt(0));
       }
-
-      // STEP D: Safety Backfill
-      // If we are STILL short (e.g. 0 Learning, 0 New, but 20 Reviews available),
-      // go back and grab more reviews to ensure a full quiz.
       while (finalSelection.length < 10 && reviewQueue.isNotEmpty) {
         finalSelection.add(reviewQueue.removeAt(0));
       }
 
-      debugPrint("🏁 QUIZ GENERATED: ${finalSelection.length} words");
-      debugPrint("   IDs: ${finalSelection.map((e) => e['word_id']).toList()}");
-
-      // 4. SHUFFLE FINAL
-      // Just shuffle the cards before dealing them to the user.
       finalSelection.shuffle();
 
       if (mounted)
@@ -254,22 +224,14 @@ class _BubblePageState extends State<BubblePage>
           _isLoading = false;
         });
     } catch (e) {
-      debugPrint("Error: $e");
       if (mounted) setState(() => _isLoading = false);
     }
-  }
-
-  double _calculatePValue(DateTime lastReview, double strength) {
-    if (strength <= 0) return 1.0;
-    final gapDays = DateTime.now().difference(lastReview).inMinutes / 1440.0;
-    return 1.0 - exp(-(gapDays / strength));
   }
 
   void _processResult(bool isCorrect) {
     final currentItem = _queue[_currentIndex];
     int totalAttempts = (currentItem['total_attempts'] ?? 0) + 1;
-    int totalCorrect =
-        (currentItem['total_correct'] ?? 0) + (isCorrect ? 1 : 0);
+    int totalCorrect = (currentItem['total_correct'] ?? 0) + (isCorrect ? 1 : 0);
     String status = currentItem['status'];
     double strength = (currentItem['strength'] as num).toDouble();
     int streak = currentItem['streak'];
@@ -286,7 +248,7 @@ class _BubblePageState extends State<BubblePage>
         streak++;
         if (streak >= 3) {
           status = 'consolidating';
-          double efficiency = sqrt(3 / totalAttempts);
+          double efficiency = math.sqrt(3 / totalAttempts);
           double rewardFloat = 10.0 + (20.0 * efficiency);
           nextDueAt = now.add(Duration(minutes: rewardFloat.round()));
           strength = rewardFloat.round() / 1440.0;
@@ -319,10 +281,7 @@ class _BubblePageState extends State<BubblePage>
     }
 
     setState(() {
-      if (isCorrect)
-        _sessionCorrect++;
-      else
-        _sessionWrong++;
+      if (isCorrect) _sessionCorrect++; else _sessionWrong++;
       currentItem['streak'] = streak;
       currentItem['status'] = status;
       currentItem['strength'] = strength;
@@ -344,6 +303,14 @@ class _BubblePageState extends State<BubblePage>
 
   void _handleAction({required bool isUp}) async {
     HapticFeedback.heavyImpact();
+    
+    // ✨ TRIGGER SPARKLES IF CORRECT
+    if (isUp) {
+       _sparkleController.reset();
+       _sparkleController.forward();
+       setState(() => _showSparkles = true);
+    }
+
     _processResult(isUp);
     await _popController.reverse();
     if (mounted) {
@@ -351,6 +318,7 @@ class _BubblePageState extends State<BubblePage>
         _currentIndex++;
         _dragDistance = 0.0;
         _isDragging = false;
+        _showSparkles = false; // Reset sparkles for next card
       });
       _popController.forward();
       if (_currentIndex >= _queue.length) _saveSessionToDB();
@@ -364,9 +332,7 @@ class _BubblePageState extends State<BubblePage>
   }
 
   Future<void> _speak() async {
-    String text = widget.isReversed
-        ? currentItem['reveal']
-        : currentItem['front'];
+    String text = widget.isReversed ? currentItem['reveal'] : currentItem['front'];
     if (text.isNotEmpty && text != 'Finished!') await _flutterTts.speak(text);
   }
 
@@ -381,234 +347,195 @@ class _BubblePageState extends State<BubblePage>
     if (_currentIndex >= _queue.length) {
       return Scaffold(
         backgroundColor: AppColors.background,
-        appBar: AppBar(
-          backgroundColor: Colors.transparent,
-          iconTheme: const IconThemeData(color: Colors.white),
-        ),
         body: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(
-                Icons.check_circle_outline,
-                color: AppColors.success,
-                size: 80,
-              ),
+              const Icon(Icons.check_circle_outline, color: AppColors.success, size: 80),
               const SizedBox(height: 20),
-              const Text(
-                "Session Complete!",
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              Text(
-                "Correct: $_sessionCorrect  |  Review: $_sessionWrong",
-                style: const TextStyle(color: Colors.grey),
-              ),
+              const Text("Session Complete!", style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+              Text("Correct: $_sessionCorrect  |  Review: $_sessionWrong", style: const TextStyle(color: Colors.grey)),
               const SizedBox(height: 50),
               SizedBox(
-                width: 200,
-                height: 50,
+                width: 200, height: 50,
                 child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primary,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                  ),
+                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))),
                   onPressed: _restartSession,
-                  child: const Text(
-                    "CONTINUE",
-                    style: TextStyle(
-                      color: Colors.black,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                    ),
-                  ),
+                  child: const Text("CONTINUE", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 16)),
                 ),
               ),
               const SizedBox(height: 20),
-              TextButton.icon(
-                onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.home, color: Colors.white70),
-                label: const Text(
-                  "Main Menu",
-                  style: TextStyle(color: Colors.white70),
-                ),
-              ),
+              TextButton.icon(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.home, color: Colors.white70), label: const Text("Main Menu", style: TextStyle(color: Colors.white70))),
             ],
           ),
         ),
       );
     }
 
+    // --- ANIMATION & VISUAL LOGIC ---
     double progress = (_dragDistance.abs() / _triggerThreshold).clamp(0.0, 1.0);
     bool isUp = _dragDistance < 0;
     bool isDown = _dragDistance > 0;
-    String displayedText = _isDragging
-        ? currentItem['reveal']
-        : currentItem['front'];
+    String displayedText = _isDragging ? currentItem['reveal'] : currentItem['front'];
+    
+    // Minimalist Color Logic
     Color bubbleColor = Color.lerp(
-      AppColors.cardColor,
-      isUp
-          ? Colors.green.shade900
-          : (isDown ? Colors.red.shade900 : AppColors.cardColor),
+      AppColors.cardColor, // Neutral state
+      isUp ? Colors.green.shade600 : (isDown ? Colors.red.shade600 : AppColors.cardColor),
       progress,
     )!;
+
+    // Breathing Animation (Scale)
+    double breathingScale = 1.0 + (_breathingController.value * 0.1); // Increased breathing range
 
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onPanStart: (_) {
-            HapticFeedback.selectionClick();
-            setState(() => _isDragging = true);
-          },
-          onPanUpdate: (details) {
-            setState(() => _dragDistance += details.delta.dy);
-          },
-          onPanEnd: (_) {
-            if (_dragDistance <= -_triggerThreshold)
-              _handleAction(isUp: true);
-            else if (_dragDistance >= _triggerThreshold)
-              _handleAction(isUp: false);
-            else
-              setState(() {
-                _dragDistance = 0.0;
-                _isDragging = false;
-              });
-          },
-          child: Stack(
-            children: [
-              _buildTarget(
-                Alignment.topCenter,
-                Icons.check_circle,
-                AppColors.success,
-                isUp ? progress : 0.0,
-              ),
-              _buildTarget(
-                Alignment.bottomCenter,
-                Icons.cancel,
-                Colors.redAccent,
-                isDown ? progress : 0.0,
-              ),
-              Positioned(
-                top: 20,
-                right: 30,
-                child: _buildScore(
-                  "Correct",
-                  _sessionCorrect,
-                  AppColors.success,
-                ),
-              ),
-              Positioned(
-                bottom: 20,
-                right: 30,
-                child: _buildScore("Review", _sessionWrong, Colors.redAccent),
-              ),
-              Positioned(
-                top: 20,
-                left: 20,
-                child: FloatingActionButton.small(
-                  heroTag: "close",
-                  backgroundColor: AppColors.cardColor,
-                  onPressed: () => Navigator.pop(context),
-                  child: const Icon(Icons.close, color: Colors.white),
-                ),
-              ),
+        child: Stack(
+          children: [
+             // ✨ FIXED BUBBLE BATH BACKGROUND
+             const Positioned.fill(child: BubbleBathBackground()),
 
-              Center(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 20.0),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const SizedBox(width: 50),
-                      ScaleTransition(
-                        scale: _scaleAnimation,
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 100),
-                          height: 240,
-                          width: 240,
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                            color: bubbleColor,
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color:
-                                  (isUp
-                                          ? AppColors.success
-                                          : (isDown
-                                                ? Colors.red
-                                                : Colors.blueGrey))
-                                      .withOpacity(0.5),
-                              width: 4,
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.3),
-                                blurRadius: 20,
-                                spreadRadius: 5,
-                              ),
-                            ],
-                          ),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                displayedText,
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(
-                                  fontSize: 32,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.white,
+             // Gradient Hint overlay
+             AnimatedOpacity(
+               duration: const Duration(milliseconds: 200),
+               opacity: progress * 0.2, 
+               child: Container(
+                 decoration: BoxDecoration(
+                   gradient: LinearGradient(
+                     begin: Alignment.topCenter, end: Alignment.bottomCenter,
+                     colors: isUp 
+                        ? [Colors.green.withOpacity(0.3), Colors.transparent]
+                        : (isDown ? [Colors.transparent, Colors.red.withOpacity(0.3)] : [Colors.transparent, Colors.transparent])
+                   )
+                 )
+               ),
+             ),
+
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onPanStart: (_) {
+                HapticFeedback.selectionClick();
+                setState(() => _isDragging = true);
+              },
+              onPanUpdate: (details) {
+                setState(() => _dragDistance += details.delta.dy);
+              },
+              onPanEnd: (_) {
+                if (_dragDistance <= -_triggerThreshold)
+                  _handleAction(isUp: true);
+                else if (_dragDistance >= _triggerThreshold)
+                  _handleAction(isUp: false);
+                else
+                  setState(() {
+                    _dragDistance = 0.0;
+                    _isDragging = false;
+                  });
+              },
+              child: Stack(
+                children: [
+                  _buildTarget(Alignment.topCenter, Icons.check_circle, AppColors.success, isUp ? progress : 0.0),
+                  _buildTarget(Alignment.bottomCenter, Icons.cancel, Colors.redAccent, isDown ? progress : 0.0),
+                  
+                  Positioned(top: 20, right: 30, child: _buildScore("Correct", _sessionCorrect, AppColors.success)),
+                  Positioned(bottom: 20, right: 30, child: _buildScore("Review", _sessionWrong, Colors.redAccent)),
+                  
+                  Positioned(top: 20, left: 20, child: FloatingActionButton.small(heroTag: "close", backgroundColor: AppColors.cardColor, onPressed: () => Navigator.pop(context), child: const Icon(Icons.close, color: Colors.white))),
+
+                  // --- THE BUBBLE ---
+                  Center(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20.0),
+                      child: Transform.translate(
+                         // 🚀 PHYSICS: Physically move the bubble up/down
+                        offset: Offset(0, _dragDistance), 
+                        child: Transform.rotate(
+                          // 🚀 PHYSICS: Tilt heavier
+                          angle: (_dragDistance * 0.005), 
+                          child: ScaleTransition(
+                            scale: _scaleAnimation,
+                            child: Transform.scale(
+                              // Breathing Effect
+                              scale: _isDragging ? 1.05 : breathingScale, 
+                              child: AnimatedContainer(
+                                duration: const Duration(milliseconds: 100),
+                                height: 260, 
+                                width: 260,
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  // ✨ MINIMALIST FLAT COLOR + BORDER
+                                  color: bubbleColor,
+                                  border: Border.all(
+                                    color: Colors.white.withOpacity(0.2 + (progress * 0.3)), 
+                                    width: 2 + (progress * 2)
+                                  ),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: bubbleColor.withOpacity(0.5),
+                                      blurRadius: 20 + (progress * 10),
+                                      spreadRadius: progress * 5,
+                                    ),
+                                  ],
+                                ),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      displayedText,
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(fontSize: 34, fontWeight: FontWeight.bold, color: Colors.white),
+                                    ),
+                                    if (_isDragging) 
+                                      const Padding(
+                                        padding: EdgeInsets.only(top: 10.0),
+                                        child: Text("(Release to select)", style: TextStyle(color: Colors.white70, fontSize: 12)),
+                                      )
+                                  ],
                                 ),
                               ),
-                            ],
+                            ),
                           ),
                         ),
                       ),
-                      FloatingActionButton(
+                    ),
+                  ),
+
+                  // ✨ BIGGER SPARKLE EXPLOSION
+                  if (_showSparkles)
+                    Positioned.fill(
+                      child: SparkleExplosion(controller: _sparkleController),
+                    ),
+
+                  Positioned(
+                    bottom: 120, right: 0, left: 0,
+                    child: Center(
+                      child: FloatingActionButton(
                         heroTag: "speak",
                         backgroundColor: AppColors.cardColor,
                         elevation: 4,
                         onPressed: _speak,
-                        child: const Icon(
-                          Icons.volume_up_rounded,
-                          color: Colors.white,
-                          size: 28,
-                        ),
+                        child: const Icon(Icons.volume_up_rounded, color: Colors.white, size: 28),
                       ),
-                    ],
+                    ),
                   ),
-                ),
+                ],
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
   }
 
-  Widget _buildTarget(
-    Alignment align,
-    IconData icon,
-    Color color,
-    double opacity,
-  ) {
+  Widget _buildTarget(Alignment align, IconData icon, Color color, double opacity) {
     return Align(
       alignment: align,
       child: Padding(
         padding: const EdgeInsets.all(80),
         child: Opacity(
           opacity: opacity,
-          child: Transform.scale(
-            scale: 0.5 + opacity,
-            child: Icon(icon, color: color, size: 80),
-          ),
+          child: Transform.scale(scale: 0.5 + opacity, child: Icon(icon, color: color, size: 80)),
         ),
       ),
     );
@@ -618,23 +545,154 @@ class _BubblePageState extends State<BubblePage>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
-        Text(
-          label.toUpperCase(),
-          style: const TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.bold,
-            color: Colors.grey,
-          ),
-        ),
-        Text(
-          "$score",
-          style: TextStyle(
-            fontSize: 32,
-            fontWeight: FontWeight.w900,
-            color: color,
-          ),
-        ),
+        Text(label.toUpperCase(), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey)),
+        Text("$score", style: TextStyle(fontSize: 32, fontWeight: FontWeight.w900, color: color)),
       ],
+    );
+  }
+}
+
+// ✨ FIXED: FULL SCREEN BUBBLE BATH BACKGROUND
+class BubbleBathBackground extends StatefulWidget {
+  const BubbleBathBackground({super.key});
+
+  @override
+  State<BubbleBathBackground> createState() => _BubbleBathBackgroundState();
+}
+
+class _BubbleBathBackgroundState extends State<BubbleBathBackground> with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  final List<_BackgroundBubble> _bubbles = [];
+  final math.Random _random = math.Random();
+
+  @override
+  void initState() {
+    super.initState();
+    // Continuous loop
+    _controller = AnimationController(vsync: this, duration: const Duration(seconds: 20))..repeat();
+    for (int i = 0; i < 25; i++) {
+      _bubbles.add(_BackgroundBubble(_random));
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return LayoutBuilder(
+          builder: (context, constraints) {
+             final height = constraints.maxHeight;
+             final width = constraints.maxWidth;
+             
+             return Stack(
+               children: _bubbles.map((bubble) {
+                 // 🚀 LOGIC FIX: Continuous wrapping
+                 // We offset by controller value, but use modulo to wrap around seamlessly
+                 double movement = _controller.value * bubble.speed * height * 2; 
+                 double y = (bubble.startY - movement) % (height + 100); 
+                 
+                 // If it goes above screen (negative), it wraps to bottom automatically via math logic
+                 // But in Dart % on negative can be weird, so we adjust:
+                 if (y < -50) y = height + 50;
+
+                 return Positioned(
+                   left: bubble.xRatio * width, // Use Ratio for responsive width
+                   top: y,
+                   child: Opacity(
+                     opacity: bubble.opacity,
+                     child: Container(
+                       width: bubble.size,
+                       height: bubble.size,
+                       decoration: BoxDecoration(
+                         shape: BoxShape.circle,
+                         gradient: LinearGradient(
+                           begin: Alignment.bottomLeft, end: Alignment.topRight,
+                           colors: [
+                             Colors.white.withOpacity(0.05),
+                             AppColors.primary.withOpacity(0.15)
+                           ]
+                         ),
+                         border: Border.all(color: Colors.white.withOpacity(0.05), width: 1)
+                       ),
+                     ),
+                   ),
+                 );
+               }).toList(),
+             );
+          }
+        );
+      },
+    );
+  }
+}
+
+class _BackgroundBubble {
+  late double xRatio;
+  late double startY;
+  late double size;
+  late double speed;
+  late double opacity;
+
+  _BackgroundBubble(math.Random random) {
+    xRatio = random.nextDouble(); // 0.0 to 1.0 (Responsive Width)
+    startY = random.nextDouble() * 1000; // Initial Offset
+    size = random.nextDouble() * 40 + 10; 
+    speed = random.nextDouble() * 0.5 + 0.2; 
+    opacity = random.nextDouble() * 0.3 + 0.1;
+  }
+}
+
+// ✨ BIGGER SPARKLE EXPLOSION
+class SparkleExplosion extends StatelessWidget {
+  final AnimationController controller;
+  const SparkleExplosion({super.key, required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, child) {
+        return Stack(
+          children: List.generate(40, (index) { // INCREASED to 40 particles
+            final random = math.Random(index);
+            
+            // Explosion spread: Full 360 degrees
+            final double direction = random.nextDouble() * 2 * math.pi; 
+            
+            // Longer distance
+            final double distance = random.nextDouble() * 500 * controller.value; 
+            
+            // Varied Sizes
+            final double size = random.nextDouble() * 12 * (1 - controller.value);
+            
+            final Color color = [AppColors.primary, Colors.white, Colors.cyanAccent, Colors.purpleAccent, Colors.amber][random.nextInt(5)];
+            
+            return Positioned(
+              left: MediaQuery.of(context).size.width / 2 + (math.cos(direction) * distance) - (size/2),
+              top: MediaQuery.of(context).size.height / 2 + (math.sin(direction) * distance) - (size/2), 
+              child: Opacity(
+                opacity: (1 - controller.value).clamp(0.0, 1.0),
+                child: Container(
+                  width: size,
+                  height: size,
+                  decoration: BoxDecoration(
+                    color: color, 
+                    shape: BoxShape.circle, 
+                    boxShadow: [BoxShadow(color: color.withOpacity(0.8), blurRadius: 8, spreadRadius: 2)]
+                  ),
+                ),
+              ),
+            );
+          }),
+        );
+      },
     );
   }
 }
