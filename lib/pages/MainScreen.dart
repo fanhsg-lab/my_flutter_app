@@ -77,80 +77,98 @@ class _MainScreenState extends State<MainScreen> {
 
   // 🔥 NEW: Calculate Streak AND Total Learned Words locally
   // 🔥 FIX: Calculates CONSECUTIVE days, not total days
+  // 🔥 FIX: Improved Streak Calculation with Debugging
   Future<void> _calculateStreakAndStats() async {
     try {
       final db = await LocalDB.instance.database;
-      
-      // --- 1. STREAK CALCULATION ---
-      // Get all attempts, newest first
+
+      // --- 1. GET ALL LOGS ---
       final result = await db.query(
         'attempt_logs',
         columns: ['attempted_at'],
         orderBy: 'attempted_at DESC',
       );
 
-      int currentStreak = 0;
+      if (result.isEmpty) {
+        debugPrint("❌ No logs found in DB for streak.");
+        if (mounted) setState(() => _streak = 0);
+        return;
+      }
 
-      if (result.isNotEmpty) {
-        // A. Group logs by unique days (YYYY-MM-DD)
-        Set<String> uniqueDays = {};
-        for (var row in result) {
-          String rawDate = row['attempted_at'] as String;
-          // Extract "2024-01-24" from ISO string
-          DateTime dt = DateTime.parse(rawDate).toLocal();
-          String dateKey = "${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}";
-          uniqueDays.add(dateKey);
-        }
+      // --- 2. NORMALIZE DATES (Remove Time) ---
+      // We convert everything to "YYYY-MM-DD" strings to ignore hours/minutes
+      Set<String> uniqueDates = {};
+      for (var row in result) {
+        DateTime dt = DateTime.parse(row['attempted_at'] as String).toLocal();
+        String dateKey = "${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}";
+        uniqueDates.add(dateKey);
+      }
 
-        // B. Sort Days (Newest -> Oldest)
-        List<String> sortedDays = uniqueDays.toList()..sort((a, b) => b.compareTo(a));
+      // Sort Newest -> Oldest (e.g., [2024-01-30, 2024-01-29, 2024-01-25])
+      List<String> sortedDates = uniqueDates.toList()..sort((a, b) => b.compareTo(a));
 
-        if (sortedDays.isNotEmpty) {
-          // C. Check if Streak is Alive (Must have played Today or Yesterday)
-          DateTime now = DateTime.now();
-          String todayStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
-          
-          DateTime yesterday = now.subtract(const Duration(days: 1));
-          String yesterdayStr = "${yesterday.year}-${yesterday.month.toString().padLeft(2, '0')}-${yesterday.day.toString().padLeft(2, '0')}";
+      debugPrint("📅 Found ${sortedDates.length} active days.");
+      debugPrint("📅 Most Recent Play: ${sortedDates.first}");
 
-          String mostRecentPlay = sortedDays.first;
+      // --- 3. CALCULATE STREAK ---
+      int streak = 0;
+      DateTime now = DateTime.now();
+      
+      // Strings for Today and Yesterday
+      String todayStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+      DateTime yest = now.subtract(const Duration(days: 1));
+      String yesterdayStr = "${yest.year}-${yest.month.toString().padLeft(2, '0')}-${yest.day.toString().padLeft(2, '0')}";
 
-          // If you haven't played since before yesterday, streak is broken -> 0
-          if (mostRecentPlay == todayStr || mostRecentPlay == yesterdayStr) {
-             currentStreak = 1;
-             
-             // D. Count backwards to find the chain
-             // Start checking from the day BEFORE the most recent play
-             DateTime checkDate = DateTime.parse(mostRecentPlay).subtract(const Duration(days: 1));
-             
-             for (int i = 1; i < sortedDays.length; i++) {
-                String expectedStr = "${checkDate.year}-${checkDate.month.toString().padLeft(2, '0')}-${checkDate.day.toString().padLeft(2, '0')}";
-                
-                if (sortedDays[i] == expectedStr) {
-                  currentStreak++;
-                  // Move pointer back another day
-                  checkDate = checkDate.subtract(const Duration(days: 1));
-                } else {
-                  // Chain broken!
-                  break; 
-                }
-             }
+      String lastPlayed = sortedDates.first;
+
+      // Step A: Check if Streak is ALIVE
+      // To keep a streak, you must have played Today OR Yesterday.
+      String? nextDateToFind;
+
+      if (lastPlayed == todayStr) {
+        streak = 1;
+        nextDateToFind = yesterdayStr; // If played today, next we look for yesterday
+      } else if (lastPlayed == yesterdayStr) {
+        streak = 1;
+        // If played yesterday (but not today), streak is 1. Next we look for day before yesterday.
+        DateTime dby = now.subtract(const Duration(days: 2));
+        nextDateToFind = "${dby.year}-${dby.month.toString().padLeft(2, '0')}-${dby.day.toString().padLeft(2, '0')}";
+      } else {
+        // If last played was 2+ days ago, Streak is broken.
+        debugPrint("💔 Streak broken. Last played: $lastPlayed, Today: $todayStr");
+        streak = 0;
+      }
+
+      // Step B: Count Backwards if streak is alive
+      if (streak > 0) {
+        // Skip the first date (we already counted it)
+        for (int i = 1; i < sortedDates.length; i++) {
+          if (sortedDates[i] == nextDateToFind) {
+            streak++;
+            // Calculate the NEXT previous day
+            DateTime prev = DateTime.parse(nextDateToFind!).subtract(const Duration(days: 1));
+            nextDateToFind = "${prev.year}-${prev.month.toString().padLeft(2, '0')}-${prev.day.toString().padLeft(2, '0')}";
+          } else {
+             // Gap found! Stop counting.
+             break; 
           }
         }
       }
 
-      // --- 2. TOTAL STATS ---
+      debugPrint("🔥 Final Streak Calculation: $streak");
+
+      // --- 4. STATS (Words Learned) ---
       final learnedRes = await db.rawQuery("SELECT COUNT(*) FROM user_progress WHERE status IN ('learned', 'consolidating')");
       int learnedCount = Sqflite.firstIntValue(learnedRes) ?? 0;
 
       if (mounted) {
         setState(() {
-          _streak = currentStreak; 
+          _streak = streak;
           _totalLearnedWords = learnedCount;
         });
       }
     } catch (e) {
-      debugPrint("Stats Error: $e");
+      debugPrint("⚠️ Streak Calculation Error: $e");
     }
   }
 

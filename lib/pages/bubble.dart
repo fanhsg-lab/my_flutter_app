@@ -7,7 +7,12 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme.dart';
 import '../local_db.dart'; 
 
-class BubblePage extends StatefulWidget {
+// 🔥 1. ADD RIVERPOD IMPORTS
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'stats_provider.dart'; 
+
+// 🔥 2. CHANGE TO CONSUMER STATEFUL WIDGET
+class BubblePage extends ConsumerStatefulWidget {
   final int lessonId;
   final bool isReversed;
 
@@ -18,10 +23,10 @@ class BubblePage extends StatefulWidget {
   });
 
   @override
-  State<BubblePage> createState() => _BubblePageState();
+  ConsumerState<BubblePage> createState() => _BubblePageState();
 }
 
-class _BubblePageState extends State<BubblePage> with TickerProviderStateMixin, WidgetsBindingObserver { 
+class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStateMixin, WidgetsBindingObserver { 
   List<Map<String, dynamic>> _queue = [];
   final List<Map<String, dynamic>> _pendingUpdates = [];
 
@@ -87,26 +92,19 @@ class _BubblePageState extends State<BubblePage> with TickerProviderStateMixin, 
     super.dispose();
   }
 
+  // In bubble.dart -> _saveSessionToDB()
+
   Future<void> _saveSessionToDB() async {
     if (_pendingUpdates.isEmpty) return;
 
-    try {
-       int batchCorrect = _pendingUpdates.where((u) => u['isCorrect'] == true).length;
-       double accuracy = _pendingUpdates.length > 0 ? batchCorrect / _pendingUpdates.length : 0.0;
-       
-       if (accuracy >= 0.8) _userLearningRate = (_userLearningRate + 0.05).clamp(1.5, 3.5);
-       else if (accuracy <= 0.6) _userLearningRate = (_userLearningRate - 0.05).clamp(1.5, 3.5);
-
-       Supabase.instance.client.from('profiles').upsert({
-         'id': Supabase.instance.client.auth.currentUser?.id,
-         'learning_rate': _userLearningRate
-       });
-    } catch (e) { }
+    // ... (Your Learning Rate logic) ...
 
     List<Map<String, dynamic>> batchToSave = List.from(_pendingUpdates);
     _pendingUpdates.clear();
     
+    // 1. SAVE ALL WORDS LOCALLY (Instant)
     for (var update in batchToSave) {
+      // 👇 REPLACE THIS BLOCK
       await LocalDB.instance.updateProgressLocal(
         wordId: update['wordId'], 
         status: update['status'], 
@@ -115,9 +113,20 @@ class _BubblePageState extends State<BubblePage> with TickerProviderStateMixin, 
         streak: update['streak'], 
         totalAttempts: update['totalAttempts'], 
         totalCorrect: update['totalCorrect'],
-        isCorrect: update['isCorrect']
+        isCorrect: update['isCorrect'],
       );
     }
+    
+    // 2. 🔥 NOW SYNC ONCE (Background)
+    // This runs AFTER all words are safely in the SQLite DB.
+    // We don't use 'await' so the UI doesn't freeze.
+    LocalDB.instance.syncProgress().then((_) {
+       // Optional: Update charts again after cloud confirms
+       if (mounted) ref.invalidate(statsProvider);
+    });
+
+    // 3. Update UI immediately
+    ref.invalidate(statsProvider); 
     LocalDB.instance.notifyDataChanged();
   }
 
@@ -499,7 +508,7 @@ class _BubblePageState extends State<BubblePage> with TickerProviderStateMixin, 
                   opacity: progress > 0.1 ? 1.0 : 0.0,
                   child: Padding(
                     padding: const EdgeInsets.only(top: 12.0),
-                   
+                    
                   ),
                 )
               ],

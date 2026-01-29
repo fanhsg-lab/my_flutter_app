@@ -21,7 +21,7 @@ class _RegisterPageState extends State<RegisterPage> {
     setState(() => _isLoading = true);
     try {
       // ⚠️ PASTE THE SAME WEB CLIENT ID HERE ⚠️
-      const webClientId = '770793655312-hebcdgdst4ostr90e4nhp3dphajok71m.apps.googleusercontent.com';
+      const webClientId = '770793655312-gckugi27m6m1tn5n352lbk5nhjrribog.apps.googleusercontent.com';
 
       final GoogleSignIn googleSignIn = GoogleSignIn(
         serverClientId: webClientId,

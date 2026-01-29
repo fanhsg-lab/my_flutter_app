@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'theme.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 // --- YOUR PAGE IMPORTS ---
 // (Ensure these paths match exactly where your files are)
@@ -27,8 +28,8 @@ Future<void> main() async {
 
   // ✅ INIT NOTIFICATIONS
   await NotificationService().init();
-
-  runApp(const MyApp());
+  LocalDB.instance.syncEverything();
+  runApp(const ProviderScope(child: MyApp()));
 }
 
 // 🔥 CHANGED TO STATEFUL WIDGET TO LISTEN TO APP LIFECYCLE

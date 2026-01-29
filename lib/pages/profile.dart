@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme.dart'; 
 import '../local_db.dart'; 
 import 'notification_service.dart'; // Import the service
+import 'package:google_sign_in/google_sign_in.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -44,14 +45,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  Future<void> _signOut() async {
+ Future<void> _signOut() async {
     try {
+      // 🔥 STEP 1: Sign out of Google to clear the cached account
+      // This ensures the "Choose Account" popup appears next time.
+      await GoogleSignIn().signOut();
+
+      // 🔥 STEP 2: Sign out of Supabase
       await Supabase.instance.client.auth.signOut();
+      
       if (mounted) {
+        // Remove all screens and go back to Login
         Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error signing out: $e")));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error signing out: $e")),
+        );
+      }
     }
   }
 
@@ -148,6 +160,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 );
               },
             ),
+
 
             // 5. REPAIR BUTTON
             SizedBox(
