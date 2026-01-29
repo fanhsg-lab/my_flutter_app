@@ -24,9 +24,9 @@ class _StatsPageState extends State<StatsPage> {
   int _countLearned = 0; 
   int _touchedIndex = -1;
 
-  List<FlSpot> _learnedSpots = [];  
+  List<FlSpot> _learnedSpots = [];   
   List<FlSpot> _learningSpots = []; 
-  List<String> _dateLabels = [];    
+  List<String> _dateLabels = [];     
   double _historyMaxY = 10;
 
   int _freshCount = 0;
@@ -39,32 +39,33 @@ class _StatsPageState extends State<StatsPage> {
   DateTime _selectedHeatmapDate = DateTime.now(); 
   int _selectedHeatmapScore = 0;
 
+  // 🔥 THEME COLORS (Strict Orange/Black)
+  final Color _cBlack = const Color(0xFF121212);     
+  final Color _cCard  = const Color(0xFF1E1E1E);     
+  final Color _cOrange = const Color(0xFFFF9800);    
+  final Color _cDarkOrange = const Color(0xFFE65100);
+  final Color _cGrey = const Color(0xFF424242);      
+
   @override
   void initState() {
     super.initState();
     _loadAllData();
-
-    // 🚨 ADD LISTENER: Automatically reload when DB changes
     LocalDB.instance.onDatabaseChanged.addListener(_onDatabaseChanged);
   }
 
   @override
   void dispose() {
-    // 🚨 CLEANUP: Stop listening when we leave
     LocalDB.instance.onDatabaseChanged.removeListener(_onDatabaseChanged);
     super.dispose();
   }
 
-  // Simple wrapper to match the listener signature
   void _onDatabaseChanged() {
-    debugPrint("👂 Stats Page heard the bell. Reloading...");
     _loadAllData();
   }
 
-Future<void> _loadAllData() async {
+  Future<void> _loadAllData() async {
     final db = await LocalDB.instance.database;
     final now = DateTime.now();
-    // 1. Create a "Midnight" version of today for fair comparison
     final todayMidnight = DateTime(now.year, now.month, now.day);
     
     final userId = Supabase.instance.client.auth.currentUser?.id;
@@ -81,11 +82,9 @@ Future<void> _loadAllData() async {
     for (var row in allWords) {
       String status = row['status'] as String;
       
-      // Snapshot Counts
       if (status == 'learning') lrn++;
       else if (status == 'consolidating' || status == 'learned') {
         lrd++;
-        // Freshness Logic
         if (row['last_reviewed'] != null) {
           final lastReview = DateTime.parse(row['last_reviewed'] as String).toLocal();
           final diff = now.difference(lastReview).inDays;
@@ -95,22 +94,20 @@ Future<void> _loadAllData() async {
         }
       }
 
-      // 🚨 FIX: Forecast Logic (Use Calendar Days)
       if (row['next_due_at'] != null) {
         DateTime due = DateTime.parse(row['next_due_at'] as String).toLocal();
         DateTime dueMidnight = DateTime(due.year, due.month, due.day);
-        
-        // Compare dates, not hours
         int diffDays = dueMidnight.difference(todayMidnight).inDays;
 
-        if (diffDays < 0) forecast[0]++;       // Overdue (Late)
-        else if (diffDays < 7) forecast[diffDays]++; // 0=Today, 1=Tmrw...
+        if (diffDays < 0) forecast[0]++;       
+        else if (diffDays < 7) forecast[diffDays]++; 
       }
     }
 
     int n = totalWords - (lrn + lrd);
     if (n < 0) n = 0;
 
+    // HEATMAP
     final logs = await db.query('attempt_logs');
     Map<DateTime, int> heat = {};
     for (var log in logs) {
@@ -119,7 +116,7 @@ Future<void> _loadAllData() async {
       heat[cleanDate] = (heat[cleanDate] ?? 0) + 1;
     }
 
-    // --- 2. CLOUD DATA ---
+    // --- 2. CLOUD DATA (History) ---
     List<FlSpot> tempLearned = [];
     List<FlSpot> tempLearning = [];
     List<String> tempDates = [];
@@ -129,15 +126,15 @@ Future<void> _loadAllData() async {
       try {
         final response = await Supabase.instance.client
             .from('daily_stats')
-            .select('date, total_learned, total_learning')
+            .select('date, learned_count, reviewing_count') 
             .eq('user_id', userId)
             .order('date', ascending: true)
             .limit(30);
 
         int index = 0;
         for (var row in response) {
-          double valLearned = (row['total_learned'] as num).toDouble();
-          double valLearning = (row['total_learning'] as num).toDouble();
+          double valLearned = (row['learned_count'] as num).toDouble();
+          double valLearning = (row['reviewing_count'] as num).toDouble();
           
           tempLearned.add(FlSpot(index.toDouble(), valLearned));
           tempLearning.add(FlSpot(index.toDouble(), valLearning));
@@ -159,7 +156,7 @@ Future<void> _loadAllData() async {
       tempLearning.add(const FlSpot(0, 0));
       tempDates.add("Today");
     }
-    debugPrint("📊 Stats Reloaded: Forecast is $forecast");
+
     if (mounted) {
       setState(() {
         _countNew = n;
@@ -174,142 +171,324 @@ Future<void> _loadAllData() async {
         _dateLabels = tempDates;
         _historyMaxY = calcMax * 1.2;
         _heatmapData = heat;
+        
         DateTime todayClean = DateTime(now.year, now.month, now.day);
-        _selectedHeatmapDate = todayClean;
-        _selectedHeatmapScore = heat[todayClean] ?? 0;
+        if (_selectedHeatmapScore == 0) {
+           _selectedHeatmapDate = todayClean;
+           _selectedHeatmapScore = heat[todayClean] ?? 0;
+        }
         _isLoading = false;
       });
     }
   }
 
-  // ================= MAIN BUILD =================
-
-@override
+  @override
   Widget build(BuildContext context) {
-    if (_isLoading) return const Scaffold(backgroundColor: AppColors.background, body: Center(child: CircularProgressIndicator()));
+    if (_isLoading) return Scaffold(backgroundColor: _cBlack, body: Center(child: CircularProgressIndicator(color: _cOrange)));
+
+    int totalActive = _countLearning + _countLearned;
+    double retention = totalActive == 0 ? 0 : (_freshCount / totalActive) * 100;
 
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: _cBlack,
       appBar: AppBar(
-        title: const Text("Complete Insights", style: TextStyle(fontWeight: FontWeight.bold, color: AppColors.textPrimary)),
+        title: const Text("STATISTICS", style: TextStyle(fontWeight: FontWeight.w900, color: Colors.white, fontSize: 22, letterSpacing: 1.2)),
         backgroundColor: Colors.transparent,
         elevation: 0,
-        iconTheme: const IconThemeData(color: AppColors.textPrimary),
+        centerTitle: true,
+        iconTheme: const IconThemeData(color: Colors.white),
       ),
-      // 1. WRAP WITH REFRESH INDICATOR
       body: RefreshIndicator(
-        onRefresh: _loadAllData, // <--- CALLS YOUR DATA LOADER
-        color: AppColors.primary,
-        backgroundColor: AppColors.cardColor,
+        onRefresh: _loadAllData,
+        color: _cOrange,
+        backgroundColor: _cCard,
         child: SingleChildScrollView(
-          // 2. IMPORTANT: Physics ensures you can always pull, even if content is short
           physics: const AlwaysScrollableScrollPhysics(), 
-          padding: const EdgeInsets.all(16.0),
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 10),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ... (Keep all your existing children exactly the same) ...
-              _buildHeader("Knowledge Snapshot"),
-              _buildCard(height: 280, child: _buildDonutChart()),
-              const SizedBox(height: 24),
-              
-              _buildHeader("Learning Velocity"),
-            const Text("Green: Mastered | Amber: In Progress", style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
-            const SizedBox(height: 10),
-            _buildCard(
-              height: 260, 
-              padding: const EdgeInsets.fromLTRB(10, 24, 24, 10), 
-              child: _buildHistoryChart()
-            ),
-            const SizedBox(height: 24),
-
-            // 3. FRESHNESS
-            _buildHeader("Memory Health"),
-            const Text("Don't let your words rot!", style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
-            const SizedBox(height: 10),
-            _buildCard(height: 260, padding: const EdgeInsets.fromLTRB(16, 24, 24, 10), child: _buildFreshnessChart()),
-            const SizedBox(height: 24),
-
-            // 4. FORECAST
-            _buildHeader("Future Review Load"),
-            _buildCard(height: 240, child: _buildForecastBarChart()),
-            const SizedBox(height: 24),
-
-            // 5. CONSISTENCY
-            _buildHeader("Consistency Streak"),
-            _buildCard(
-              padding: const EdgeInsets.all(16), 
-              child: Column(
+              // 1. TOP SUMMARY ROW
+              Row(
                 children: [
-                  _buildHeatmapDetailBox(),
-                  const SizedBox(height: 15),
-                  _buildHeatmapGraph(),
+                   Expanded(child: _buildSummaryTile("WORDS", totalActive.toString(), Icons.book)),
+                   const SizedBox(width: 12),
+                   Expanded(child: _buildSummaryTile("RETENTION", "${retention.toInt()}%", Icons.bolt)),
+                   const SizedBox(width: 12),
+                   Expanded(child: _buildSummaryTile("DAYS", _heatmapData.length.toString(), Icons.local_fire_department)),
                 ],
-              )
-            ),
-            const SizedBox(height: 40),
-          ],
+              ),
+              const SizedBox(height: 30),
+
+              // 2. KNOWLEDGE DONUT
+              _buildSectionTitle("PROGRESS"),
+              _buildDarkCard(
+                height: 320,
+                child: Column(
+                  children: [
+                     Expanded(child: _buildDonutChart()),
+                     const SizedBox(height: 20),
+                     Row(
+                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                       children: [
+                         _buildLegendDot("Mastered", _cOrange),
+                         _buildLegendDot("Learning", _cDarkOrange),
+                         _buildLegendDot("New", _cGrey),
+                       ],
+                     ),
+                     const SizedBox(height: 10),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 30),
+              
+             // 3. HISTORY CHART
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  _buildSectionTitle("VELOCITY"),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Text(
+                      "LAST ${_dateLabels.length} DAYS", 
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.3), 
+                        fontWeight: FontWeight.bold, 
+                        fontSize: 10
+                      )
+                    ),
+                  ),
+                ],
+              ),
+              _buildDarkCard(
+                height: 320, // Increased height slightly for the legend
+                padding: const EdgeInsets.fromLTRB(10, 16, 24, 10),
+                child: Column(
+                  children: [
+                    // 🔥 LEGEND ROW
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        _buildLegendDot("Mastered", _cOrange),
+                        const SizedBox(width: 16),
+                        _buildLegendDot("Learning", _cDarkOrange),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+                    
+                    // THE CHART
+                    Expanded(child: _buildHistoryChart()),
+                  ],
+                )
+              ),
+              const SizedBox(height: 30),
+              
+              // 4. FUTURE LOAD
+              _buildSectionTitle("FORECAST"),
+              _buildDarkCard(
+                height: 320, 
+                // Increased padding at bottom to let labels breathe
+                padding: const EdgeInsets.only(top: 40, bottom: 10, left: 16, right: 16),
+                child: _buildForecastBarChart()
+              ),
+              const SizedBox(height: 30),
+
+              // 5. MEMORY HEALTH
+              _buildSectionTitle("MEMORY STRENGTH"),
+              _buildDarkCard(
+                height: 300, 
+                // More space at top for the floating numbers
+                padding: const EdgeInsets.only(top: 40, bottom: 20, left: 16, right: 16),
+                child: _buildFreshnessChart()
+              ),
+              const SizedBox(height: 30),
+
+              // 6. HEATMAP
+              _buildSectionTitle("ACTIVITY"),
+              _buildDarkCard(
+                padding: const EdgeInsets.all(16), 
+                child: Column(
+                  children: [
+                    _buildHeatmapGraph(),
+                    const Divider(color: Colors.white10, height: 20),
+                    _buildHeatmapDetailRow(),
+                  ],
+                )
+              ),
+              const SizedBox(height: 40),
+            ],
           ),
         ),
       ),
     );
   }
 
-  // ================= CHART WIDGETS =================
+  // ================= UI WIDGETS =================
 
-  // 1. DUAL LINE CHART (History)
+  Widget _buildSectionTitle(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 4.0, bottom: 10.0),
+      child: Text(
+        title, 
+        style: TextStyle(
+          fontSize: 14, 
+          fontWeight: FontWeight.bold, 
+          color: _cOrange,
+          letterSpacing: 2.0
+        )
+      )
+    );
+  }
+
+  Widget _buildDarkCard({double? height, required Widget child, EdgeInsets? padding}) {
+    return Container(
+      height: height, 
+      padding: padding ?? const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: _cCard, 
+        borderRadius: BorderRadius.circular(16), 
+        border: Border.all(color: Colors.white.withOpacity(0.08)), 
+      ), 
+      child: child
+    );
+  }
+
+  Widget _buildSummaryTile(String label, String value, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 16),
+      decoration: BoxDecoration(
+        color: _cCard,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: _cOrange.withOpacity(0.3)), 
+      ),
+      child: Column(
+        children: [
+          Icon(icon, color: _cOrange, size: 22),
+          const SizedBox(height: 8),
+          Text(value, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+          const SizedBox(height: 4),
+          Text(label, style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white.withOpacity(0.5))),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLegendDot(String label, Color color) {
+    return Row(children: [
+      Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+      const SizedBox(width: 6),
+      Text(label, style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 12))
+    ]);
+  }
+
+  // ================= CHARTS =================
+
   Widget _buildHistoryChart() {
-    if (_learnedSpots.length < 2) {
-       return const Center(child: Text("Play more days to see your trend!", style: TextStyle(color: AppColors.textSecondary)));
-    }
+    if (_learnedSpots.length < 2) return const Center(child: Text("Not enough data yet.", style: TextStyle(color: Colors.white38)));
 
     return LineChart(
       LineChartData(
         gridData: FlGridData(
           show: true, 
           drawVerticalLine: false, 
-          horizontalInterval: _historyMaxY / 5,
-          getDrawingHorizontalLine: (value) => FlLine(color: AppColors.textSecondary.withOpacity(0.1), strokeWidth: 1),
+          // Show 4 horizontal grid lines for context
+          horizontalInterval: _historyMaxY / 4 == 0 ? 1 : _historyMaxY / 4, 
+          getDrawingHorizontalLine: (value) => FlLine(color: Colors.white10, strokeWidth: 1),
         ),
         titlesData: FlTitlesData(
           topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
           rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-          leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 30, getTitlesWidget: (value, meta) => Text(value.toInt().toString(), style: const TextStyle(color: AppColors.textSecondary, fontSize: 10)))),
-          bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          
+          // LEFT AXIS: Show numbers
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true, 
+              reservedSize: 28, 
+              getTitlesWidget: (val, meta) => Text(val.toInt().toString(), style: const TextStyle(color: Colors.white38, fontSize: 10))
+            )
+          ),
+          
+          // 🔥 BOTTOM AXIS: Show Dates
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 22,
+              // Calculate smart interval to prevent overlapping text
+              interval: (_dateLabels.length / 5).ceil().toDouble(), 
+              getTitlesWidget: (value, meta) {
+                int index = value.toInt();
+                // Safety check
+                if (index < 0 || index >= _dateLabels.length) return const SizedBox.shrink();
+                
+                // Only show the first date, last date, and a few in between
+                return Padding(
+                  padding: const EdgeInsets.only(top: 8.0),
+                  child: Text(
+                    _dateLabels[index], // e.g. "Jan 12"
+                    style: const TextStyle(color: Colors.white38, fontSize: 10, fontWeight: FontWeight.bold),
+                  ),
+                );
+              },
+            ),
+          ),
         ),
         borderData: FlBorderData(show: false),
         minX: 0, maxX: (_learnedSpots.length - 1).toDouble(),
-        minY: 0, maxY: _historyMaxY,
+        minY: 0, maxY: _historyMaxY, // Add buffer to top
+        
         lineBarsData: [
+          // 🟠 Learning Line (Darker)
           LineChartBarData(
             spots: _learningSpots,
             isCurved: true,
-            color: Colors.amber,
+            color: _cDarkOrange.withOpacity(0.8),
             barWidth: 3,
             isStrokeCapRound: true,
             dotData: FlDotData(show: false),
-            belowBarData: BarAreaData(show: true, color: Colors.amber.withOpacity(0.1)),
+            // Gradient Fill below the line
+            belowBarData: BarAreaData(
+              show: true, 
+              gradient: LinearGradient(
+                colors: [_cDarkOrange.withOpacity(0.1), Colors.transparent],
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+              )
+            ),
           ),
+          
+          // 🍊 Mastered Line (Brighter)
           LineChartBarData(
             spots: _learnedSpots,
             isCurved: true,
-            color: AppColors.success,
+            color: _cOrange,
             barWidth: 3,
             isStrokeCapRound: true,
             dotData: FlDotData(show: false),
-            belowBarData: BarAreaData(show: true, gradient: LinearGradient(colors: [AppColors.success.withOpacity(0.3), Colors.transparent], begin: Alignment.topCenter, end: Alignment.bottomCenter)),
+            // Gradient Fill below the line
+            belowBarData: BarAreaData(
+              show: true, 
+              gradient: LinearGradient(
+                colors: [_cOrange.withOpacity(0.3), Colors.transparent],
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+              )
+            ),
           ),
         ],
+        // Tooltip logic
         lineTouchData: LineTouchData(
           touchTooltipData: LineTouchTooltipData(
-            tooltipBgColor: AppColors.cardColor,
+            tooltipBgColor: _cCard,
             getTooltipItems: (touchedSpots) {
               return touchedSpots.map((spot) {
-                bool isLearned = spot.barIndex == 1; 
-                String label = isLearned ? "Mastered" : "Learning";
-                String date = "";
-                if (spot.x.toInt() < _dateLabels.length) date = " (${_dateLabels[spot.x.toInt()]})";
-                return LineTooltipItem("$label: ${spot.y.toInt()}$date", TextStyle(color: isLearned ? AppColors.success : Colors.amber, fontWeight: FontWeight.bold));
+                final bool isLearned = spot.barIndex == 1;
+                return LineTooltipItem(
+                  "${spot.y.toInt()}", 
+                  TextStyle(
+                    color: isLearned ? _cOrange : _cDarkOrange, 
+                    fontWeight: FontWeight.bold
+                  )
+                );
               }).toList();
             }
           )
@@ -318,21 +497,40 @@ Future<void> _loadAllData() async {
     );
   }
 
-  // 2. DONUT CHART
   Widget _buildDonutChart() {
     double total = (_countLearned + _countLearning + _countNew).toDouble();
     if (total == 0) total = 1; 
 
-    return Row(
-      children: [
-        Expanded(
-          child: PieChart(
+    // 🔥 DYNAMIC CONTENT LOGIC
+    String label = "TOTAL";
+    String countStr = total.toInt().toString();
+    Color textColor = Colors.white;
+
+    if (_touchedIndex == 0) {
+      label = "MASTERED";
+      countStr = _countLearned.toString();
+      textColor = _cOrange;
+    } else if (_touchedIndex == 1) {
+      label = "LEARNING";
+      countStr = _countLearning.toString();
+      textColor = _cDarkOrange;
+    } else if (_touchedIndex == 2) {
+      label = "NEW";
+      countStr = _countNew.toString();
+      textColor = _cGrey;
+    }
+
+    return SizedBox(
+      height: 220, // Slightly taller for breathing room
+      child: Stack(
+        children: [
+          PieChart(
             PieChartData(
               pieTouchData: PieTouchData(
                 touchCallback: (FlTouchEvent event, pieTouchResponse) {
                   setState(() {
                     if (!event.isInterestedForInteractions || pieTouchResponse == null || pieTouchResponse.touchedSection == null) {
-                      _touchedIndex = -1;
+                      _touchedIndex = -1; // Reset to Total when letting go
                       return;
                     }
                     _touchedIndex = pieTouchResponse.touchedSection!.touchedSectionIndex;
@@ -340,40 +538,70 @@ Future<void> _loadAllData() async {
                 },
               ),
               borderData: FlBorderData(show: false),
-              sectionsSpace: 2,
-              centerSpaceRadius: 40,
+              sectionsSpace: 5, // A bit more space between sections looks cleaner
+              centerSpaceRadius: 70,
               sections: [
-                _buildPieSection(0, _countLearned.toDouble(), AppColors.success, "Mastered", total),
-                _buildPieSection(1, _countLearning.toDouble(), Colors.amber, "Learning", total),
-                _buildPieSection(2, _countNew.toDouble(), AppColors.textSecondary.withOpacity(0.3), "Unseen", total),
+                _buildPieSection(0, _countLearned.toDouble(), _cOrange, total),
+                _buildPieSection(1, _countLearning.toDouble(), _cDarkOrange, total),
+                _buildPieSection(2, _countNew.toDouble(), _cGrey, total),
               ],
             ),
           ),
-        ),
-        Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildLegendItem(AppColors.success, "Mastered ($_countLearned)"),
-            const SizedBox(height: 8),
-            _buildLegendItem(Colors.amber, "Learning ($_countLearning)"),
-            const SizedBox(height: 8),
-            _buildLegendItem(AppColors.textSecondary.withOpacity(0.3), "Unseen ($_countNew)"),
-          ],
-        ),
-        const SizedBox(width: 10),
-      ],
+          
+          // 🔥 ANIMATED CENTER TEXT
+          Center(
+             child: Column(
+               mainAxisSize: MainAxisSize.min,
+               children: [
+                 AnimatedSwitcher(
+                   duration: const Duration(milliseconds: 300),
+                   transitionBuilder: (Widget child, Animation<double> animation) {
+                     return ScaleTransition(scale: animation, child: child);
+                   },
+                   child: Text(
+                     countStr, 
+                     key: ValueKey<String>(countStr), // Key ensures animation triggers
+                     style: TextStyle(
+                       fontSize: 36, 
+                       fontWeight: FontWeight.w900, 
+                       color: textColor
+                     )
+                   ),
+                 ),
+                 AnimatedSwitcher(
+                   duration: const Duration(milliseconds: 300),
+                   child: Text(
+                     label, 
+                     key: ValueKey<String>(label),
+                     style: TextStyle(
+                       fontSize: 12, 
+                       color: textColor.withOpacity(0.7), 
+                       fontWeight: FontWeight.bold, 
+                       letterSpacing: 2.0
+                     )
+                   ),
+                 ),
+               ],
+             )
+          )
+        ],
+      ),
     );
   }
 
-  PieChartSectionData _buildPieSection(int index, double value, Color color, String title, double total) {
+ PieChartSectionData _buildPieSection(int index, double value, Color color, double total) {
     final isTouched = index == _touchedIndex;
-    final radius = isTouched ? 60.0 : 50.0;
-    final pct = ((value / total) * 100).toInt();
-    return PieChartSectionData(color: color, value: value, title: pct > 5 ? '$pct%' : '', radius: radius, titleStyle: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.textPrimary, fontSize: 12));
+    // When touched, it grows from 16 to 25
+    final double radius = isTouched ? 25.0 : 16.0; 
+    
+    return PieChartSectionData(
+      color: color.withOpacity(isTouched ? 1.0 : 0.8), // Brighten when touched
+      value: value, 
+      title: '', 
+      radius: radius,
+    );
   }
 
-  // 3. FRESHNESS CHART
   Widget _buildFreshnessChart() {
     int maxVal = max(_freshCount, max(_fadingCount, _dormantCount));
     if (maxVal == 0) maxVal = 10;
@@ -381,14 +609,18 @@ Future<void> _loadAllData() async {
     return BarChart(
       BarChartData(
         alignment: BarChartAlignment.spaceAround,
-        maxY: (maxVal * 1.2),
+        maxY: (maxVal * 1.3), 
         barTouchData: BarTouchData(
-          enabled: true,
+          enabled: false, // 🚫 NO CLICKING
           touchTooltipData: BarTouchTooltipData(
-             tooltipBgColor: AppColors.cardColor,
+             tooltipBgColor: Colors.transparent, // 👻 INVISIBLE BG
+             tooltipPadding: EdgeInsets.zero,
+             tooltipMargin: 2,
              getTooltipItem: (group, groupIndex, rod, rodIndex) {
-               String label = groupIndex == 0 ? "Fresh" : (groupIndex == 1 ? "Fading" : "Dormant");
-               return BarTooltipItem("$label\n${rod.toY.toInt()}", const TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold));
+               return BarTooltipItem(
+                 rod.toY.toInt().toString(),
+                 const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+               );
              }
           )
         ),
@@ -398,15 +630,15 @@ Future<void> _loadAllData() async {
             sideTitles: SideTitles(
               showTitles: true,
               getTitlesWidget: (double value, TitleMeta meta) {
-                const style = TextStyle(color: AppColors.textSecondary, fontWeight: FontWeight.bold, fontSize: 12);
+                const style = TextStyle(color: Colors.white54, fontWeight: FontWeight.bold, fontSize: 10);
                 String text;
                 switch (value.toInt()) {
-                  case 0: text = 'Fresh\n(<7d)'; break;
-                  case 1: text = 'Fading\n(7-30d)'; break;
-                  case 2: text = 'Dormant\n(>30d)'; break;
+                  case 0: text = 'RECENT\n< 1 wk'; break;
+                  case 1: text = 'SLIPPING\n< 1 mo'; break;
+                  case 2: text = 'LOST\n> 1 mo'; break;
                   default: text = '';
                 }
-                return Padding(padding: const EdgeInsets.only(top: 8), child: Text(text, style: style, textAlign: TextAlign.center));
+                return Padding(padding: const EdgeInsets.only(top: 10), child: Text(text, style: style, textAlign: TextAlign.center));
               },
               reservedSize: 40,
             ),
@@ -418,34 +650,33 @@ Future<void> _loadAllData() async {
         gridData: FlGridData(show: false),
         borderData: FlBorderData(show: false),
         barGroups: [
-          BarChartGroupData(x: 0, barRods: [BarChartRodData(toY: _freshCount.toDouble(), color: AppColors.success, width: 40, borderRadius: BorderRadius.circular(6))]),
-          BarChartGroupData(x: 1, barRods: [BarChartRodData(toY: _fadingCount.toDouble(), color: Colors.amber, width: 40, borderRadius: BorderRadius.circular(6))]),
-          BarChartGroupData(x: 2, barRods: [BarChartRodData(toY: _dormantCount.toDouble(), color: Colors.redAccent, width: 40, borderRadius: BorderRadius.circular(6))]),
+          _buildBar(0, _freshCount, _cOrange),
+          _buildBar(1, _fadingCount, _cDarkOrange),
+          _buildBar(2, _dormantCount, Colors.redAccent),
         ],
       ),
     );
   }
 
-  // 4. FORECAST CHART (FIXED: Full Height Hover)
   Widget _buildForecastBarChart() {
-    final labels = ["Late", "Tmrw", "+2d", "+3d", "+4d", "+5d", "+6d"];
+    final labels = ["Late", "Tmro", "+2d", "+3d", "+4d", "+5d", "+6d"];
     int maxVal = _forecastCounts.reduce(max);
     if(maxVal == 0) maxVal = 5;
 
     return BarChart(
       BarChartData(
         alignment: BarChartAlignment.spaceBetween,
-        maxY: maxVal.toDouble() + 2,
+        maxY: maxVal.toDouble() + 5, // Extra space on top
         barTouchData: BarTouchData(
-          enabled: true,
-          // 🚨 FIX: Allow touching the background bar to trigger tooltip!
-          allowTouchBarBackDraw: true, 
+          enabled: false, // 🚫 NO CLICKING (Permanent Numbers)
           touchTooltipData: BarTouchTooltipData(
-             tooltipBgColor: AppColors.cardColor,
+             tooltipBgColor: Colors.transparent, // 👻 INVISIBLE BG
+             tooltipPadding: EdgeInsets.zero,
+             tooltipMargin: 2,
              getTooltipItem: (group, groupIndex, rod, rodIndex) {
                return BarTooltipItem(
-                 "${labels[group.x.toInt()]}\n${rod.toY.toInt()} words", 
-                 const TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold)
+                 "${rod.toY.toInt()}", 
+                 const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14) // CLEAN WHITE TEXT
                );
              }
           ),
@@ -454,31 +685,35 @@ Future<void> _loadAllData() async {
           topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
           rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
           leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-          bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, getTitlesWidget: (value, meta) {
-            int idx = value.toInt();
-            if (idx < 0 || idx >= labels.length) return const SizedBox.shrink();
-            return Padding(padding: const EdgeInsets.only(top: 8), child: Text(labels[idx], style: const TextStyle(color: AppColors.textSecondary, fontWeight: FontWeight.bold, fontSize: 10)));
-          })),
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true, 
+              reservedSize: 32, // ✅ INCREASED SPACE FOR LABELS
+              getTitlesWidget: (value, meta) {
+                int idx = value.toInt();
+                if (idx < 0 || idx >= labels.length) return const SizedBox.shrink();
+                return Padding(
+                  padding: const EdgeInsets.only(top: 12), 
+                  child: Text(labels[idx], style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 10))
+                );
+              }
+            )
+          ),
         ),
         borderData: FlBorderData(show: false),
         gridData: FlGridData(show: false),
         barGroups: _forecastCounts.asMap().entries.map((entry) {
-          Color barColor = entry.key == 0 ? Colors.redAccent : (entry.key == 1 ? Colors.amber : AppColors.primary);
-          
+          Color barColor = entry.key == 0 ? Colors.redAccent : _cOrange;
           return BarChartGroupData(
             x: entry.key,
+            showingTooltipIndicators: entry.value > 0 ? [0] : [], // Only show if > 0
             barRods: [
               BarChartRodData(
                 toY: entry.value.toDouble(),
                 color: barColor,
-                width: 24, // Wider bars for better visibility
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
-                // Background bar is now interactive!
-                backDrawRodData: BackgroundBarChartRodData(
-                  show: true, 
-                  toY: maxVal.toDouble() + 2, 
-                  color: AppColors.textSecondary.withOpacity(0.05)
-                ),
+                width: 14, 
+                borderRadius: BorderRadius.circular(2),
+                backDrawRodData: BackgroundBarChartRodData(show: true, toY: maxVal.toDouble() + 5, color: Colors.white.withOpacity(0.05)),
               ),
             ],
           );
@@ -487,49 +722,59 @@ Future<void> _loadAllData() async {
     );
   }
 
-  // 5. HEATMAP & HELPERS
-  Widget _buildHeatmapDetailBox() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(color: AppColors.textSecondary.withOpacity(0.1), borderRadius: BorderRadius.circular(12), border: Border.all(color: AppColors.textSecondary.withOpacity(0.1))),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text("SELECTED DATE", style: TextStyle(color: AppColors.textSecondary, fontSize: 10, letterSpacing: 1)),
-              const SizedBox(height: 4),
-              Text(DateFormat.yMMMMd().format(_selectedHeatmapDate), style: const TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 16)),
-            ],
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            decoration: BoxDecoration(color: _getHeatmapColor(_selectedHeatmapScore), borderRadius: BorderRadius.circular(20)),
-            child: Text("$_selectedHeatmapScore interactions", style: const TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold)),
-          )
-        ],
-      ),
+  BarChartGroupData _buildBar(int x, int value, Color color) {
+    return BarChartGroupData(
+      x: x, 
+      showingTooltipIndicators: value > 0 ? [0] : [],
+      barRods: [
+        BarChartRodData(
+          toY: value.toDouble(), 
+          color: color, 
+          width: 25, 
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+          backDrawRodData: BackgroundBarChartRodData(show: true, toY: null, color: Colors.white.withOpacity(0.05))
+        )
+      ]
     );
   }
 
- Widget _buildHeatmapGraph() {
+  Widget _buildHeatmapDetailRow() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(DateFormat.yMMMMd().format(_selectedHeatmapDate).toUpperCase(), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+            const SizedBox(height: 2),
+            const Text("SELECTED DATE", style: TextStyle(color: Colors.white38, fontSize: 10)),
+          ],
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          decoration: BoxDecoration(color: _cOrange, borderRadius: BorderRadius.circular(8)),
+          child: Text("$_selectedHeatmapScore XP", style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+        )
+      ],
+    );
+  }
+
+  Widget _buildHeatmapGraph() {
     return SizedBox(
       width: double.infinity,
       child: HeatMap(
         datasets: _heatmapData,
-        colorMode: ColorMode.color, // Use specific colors for buckets
+        colorMode: ColorMode.color, 
         scrollable: true,
         showText: false,
-        // ✅ FIX: Thresholds updated to 200/400/800/1000
-        // Gradient: Faint Primary -> Solid Primary -> Amber -> Bright Orange/Fire
+        startDate: DateTime.now().subtract(const Duration(days: 60)), 
+        endDate: DateTime.now(),
         colorsets: {
-          1: AppColors.primary.withOpacity(0.3),  // 1-199: Faint Green
-          200: AppColors.primary.withOpacity(0.6),// 200-399: Medium Green
-          400: AppColors.primary,                 // 400-799: Solid Green
-          800: AppColors.accent,                  // 800-999: Amber/Orange
-          1000: Colors.deepOrangeAccent,          // 1000+: Bright "Fire" Orange
+          1: _cOrange.withOpacity(0.2),  
+          100: _cOrange.withOpacity(0.4),
+          200: _cOrange.withOpacity(0.6),                 
+          300: _cOrange.withOpacity(0.8),                  
+          400: _cOrange,          
         },
         onClick: (value) {
           setState(() {
@@ -537,37 +782,12 @@ Future<void> _loadAllData() async {
             _selectedHeatmapScore = _heatmapData[value] ?? 0;
           });
         },
-        // ✅ FIX: Very faint grey for empty days so they fade into the background
         defaultColor: Colors.white.withOpacity(0.05),
-        textColor: AppColors.textPrimary,
+        textColor: Colors.white,
         showColorTip: false,
-        startDate: DateTime.now().subtract(const Duration(days: 80)),
-        endDate: DateTime.now(),
         size: 28,
         margin: const EdgeInsets.all(2),
       ),
     );
-  }
-  
-  Color _getHeatmapColor(int score) {
-    // Exact match for the logic used in colorsets above
-    if (score == 0) return Colors.white.withOpacity(0.05);
-    if (score < 200) return AppColors.primary.withOpacity(0.3);
-    if (score < 400) return AppColors.primary.withOpacity(0.6);
-    if (score < 800) return AppColors.primary;
-    if (score < 1000) return AppColors.accent;
-    return Colors.deepOrangeAccent; // The bright orange color
-  }
-
-  Widget _buildHeader(String title) {
-    return Padding(padding: const EdgeInsets.only(left: 4.0, bottom: 12.0), child: Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: AppColors.textPrimary)));
-  }
-
-  Widget _buildCard({double? height, required Widget child, EdgeInsets? padding}) {
-    return Container(height: height, padding: padding ?? const EdgeInsets.all(24), decoration: BoxDecoration(color: AppColors.cardColor, borderRadius: BorderRadius.circular(24), border: Border.all(color: AppColors.textSecondary.withOpacity(0.1)), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 15, offset: const Offset(0, 5))]), child: child);
-  }
-
-  Widget _buildLegendItem(Color color, String label) {
-    return Row(children: [Container(width: 10, height: 10, decoration: BoxDecoration(color: color, shape: BoxShape.circle)), const SizedBox(width: 6), Text(label, style: const TextStyle(color: AppColors.textSecondary, fontWeight: FontWeight.w600, fontSize: 12))]);
   }
 }

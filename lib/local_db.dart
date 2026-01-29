@@ -8,97 +8,10 @@ import 'package:flutter/foundation.dart';
 class LocalDB {
   static final LocalDB instance = LocalDB._init();
   static Database? _database;
-  final ValueNotifier<bool> onDatabaseChanged = ValueNotifier(false); 
+  final ValueNotifier<bool> onDatabaseChanged = ValueNotifier(false);
+  
   void notifyDataChanged() {
-    onDatabaseChanged.value = !onDatabaseChanged.value; // Toggle to trigger listeners
-  }
-// --- REPAIR TOOL: FORCE LINK WORDS TO CHAPTER 6 ---
-  // --- EMERGENCY TOOL: DOWNLOAD WORDS FROM CLOUD ---
-// --- FINAL TOOL: DOWNLOAD ALL WORDS FOR CHAPTER 6 ---
-
-// Get the most urgent words that need review
-  Future<List<Map<String, dynamic>>> getDueWords({int limit = 10}) async {
-    final db = await database;
-    final now = DateTime.now().toIso8601String();
-
-    // 1. SELECT only Learning/Consolidating
-    // 2. WHERE they are Due (next_due_at <= Now)
-    // 3. ORDER BY next_due_at ASC (Oldest overdue first -> Queue system)
-    final List<Map<String, dynamic>> maps = await db.rawQuery('''
-      SELECT * FROM user_progress 
-      WHERE status IN ('learning', 'consolidating') 
-        AND next_due_at <= ? 
-      ORDER BY next_due_at ASC 
-      LIMIT ?
-    ''', [now, limit]);
-
-    return maps;
-  }
-
-
-
-  Future<void> forceDownloadChapter6() async {
-    final db = await instance.database;
-    final supabase = Supabase.instance.client;
-    
-    debugPrint("☁️ CONNECTING TO CLOUD TO FETCH ALL CHAPTER 6 WORDS...");
-
-    // 1. Get the LOCAL Lesson ID (The "Bucket" on your phone)
-    final localLessonRes = await db.query('lessons', where: 'chapter_number = 6');
-    if (localLessonRes.isEmpty) {
-        debugPrint("❌ No local lesson found for Ch 6. Cannot attach words.");
-        return;
-    }
-    final int localLessonId = localLessonRes.first['id'] as int;
-    debugPrint("📂 Local Bucket ID: $localLessonId");
-
-    try {
-      // 2. Get the CLOUD Lesson ID (The "Bucket" on the server)
-      // We ask Supabase: "Which lesson is Chapter 6?"
-      final cloudLessonRes = await supabase
-          .from('lessons')
-          .select('id')
-          .eq('chapter_number', 6)
-          .maybeSingle(); // Returns null if not found, instead of crashing
-
-      if (cloudLessonRes == null) {
-        debugPrint("❌ Server has no Chapter 6! You need to create it in Supabase first.");
-        return;
-      }
-      
-      final int cloudLessonId = cloudLessonRes['id'];
-      debugPrint("☁️  Server Source ID: $cloudLessonId");
-
-      // 3. Fetch ALL words from the Cloud Bucket
-      final List<dynamic> allCloudWords = await supabase
-          .from('words')
-          .select()
-          .eq('lesson_id', cloudLessonId); // Get everything in that lesson
-
-      if (allCloudWords.isEmpty) {
-        debugPrint("⚠️ Server has the Lesson, but it is empty (0 words).");
-        return;
-      }
-
-      debugPrint("✅ Found ${allCloudWords.length} words on Server. Downloading...");
-
-      // 4. Save them to the Phone
-      int count = 0;
-      for (var w in allCloudWords) {
-        await db.insert('words', {
-          'id': w['id'], 
-          'lesson_id': localLessonId, // IMPORTANT: Link to the LOCAL bucket ID
-          'es': w['es'], 
-          'en': w['en']
-        }, conflictAlgorithm: ConflictAlgorithm.replace);
-        count++;
-      }
-      
-      debugPrint("🎉 SUCCESS! Downloaded $count words. Restart App.");
-
-    } catch (e) {
-      debugPrint("💥 ERROR DOWNLOADING: $e");
-    }
+    onDatabaseChanged.value = !onDatabaseChanged.value;
   }
 
   LocalDB._init();
@@ -112,99 +25,29 @@ class LocalDB {
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, filePath);
-
-    return await openDatabase(path, version: 1, onCreate: _createDB);
-  }
-
-
-
-
-// --- DETECTIVE TOOL: FIND WHERE THE WORDS ARE HIDING ---
-  Future<void> findHiddenWords() async {
-    final db = await instance.database;
-    debugPrint("\n🕵️‍♂️ --- STARTING WORD HUNT ---");
-
-    // 1. Group words by Lesson ID to see where they are clustered
-    final results = await db.rawQuery('''
-      SELECT lesson_id, COUNT(*) as count 
-      FROM words 
-      GROUP BY lesson_id
-    ''');
-
-    if (results.isEmpty) {
-      debugPrint("❌ CRITICAL: Local database has 0 words total.");
-    } else {
-      debugPrint("✅ Found words grouped by Lesson IDs:");
-      for (var row in results) {
-        int id = row['lesson_id'] as int;
-        int count = row['count'] as int;
-        
-        // Check if this ID actually exists in the Lessons table
-        final lessonRow = await db.query('lessons', where: 'id = ?', whereArgs: [id]);
-        String lessonName = lessonRow.isNotEmpty ? lessonRow.first['title'] as String : "UNKNOWN/ORPHAN";
-        
-        debugPrint("   👉 Lesson ID $id has $count words. (Title: '$lessonName')");
-      }
-    }
-    debugPrint("🕵️‍♂️ -----------------------------\n");
+    // Added onOpen to ensure migration support for existing users
+    return await openDatabase(path, version: 1, onCreate: _createDB, onOpen: _onOpen);
   }
 
   Future<void> _createDB(Database db, int version) async {
-    // 1. Lessons Table
-    await db.execute('''
-      CREATE TABLE lessons (
-        id INTEGER PRIMARY KEY,
-        title TEXT,
-        chapter_number INTEGER,
-        book_id INTEGER
-      )
-    ''');
+    await db.execute('CREATE TABLE lessons (id INTEGER PRIMARY KEY, title TEXT, chapter_number INTEGER, book_id INTEGER)');
+    await db.execute('CREATE TABLE words (id INTEGER PRIMARY KEY, lesson_id INTEGER, es TEXT, en TEXT)');
+    await db.execute('CREATE TABLE user_progress (word_id INTEGER PRIMARY KEY, status TEXT, strength REAL, last_reviewed TEXT, next_due_at TEXT, consecutive_correct INTEGER, total_attempts INTEGER, total_correct INTEGER, needs_sync INTEGER DEFAULT 0)');
+    await db.execute('CREATE TABLE attempt_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, word_id INTEGER, correct INTEGER, attempted_at TEXT, synced INTEGER DEFAULT 0)');
+    // 🔒 META TABLE: Stores the ID of the user who owns this data
+    await db.execute('CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT)');
+  }
 
-    // 2. Words Table
-    await db.execute('''
-      CREATE TABLE words (
-        id INTEGER PRIMARY KEY,
-        lesson_id INTEGER,
-        es TEXT,
-        en TEXT
-      )
-    ''');
-
-    // 3. User Progress (The offline cache)
-    await db.execute('''
-      CREATE TABLE user_progress (
-        word_id INTEGER PRIMARY KEY,
-        status TEXT,
-        strength REAL,
-        last_reviewed TEXT,
-        next_due_at TEXT,
-        consecutive_correct INTEGER,
-        total_attempts INTEGER,
-        total_correct INTEGER,
-        needs_sync INTEGER DEFAULT 0 
-      )
-    ''');
-    
-    // 4. Offline Attempt Logs
-    await db.execute('''
-      CREATE TABLE attempt_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        word_id INTEGER,
-        correct INTEGER,
-        attempted_at TEXT
-      )
-    ''');
+  // Ensure app_meta exists even for users who already have the DB created
+  Future<void> _onOpen(Database db) async {
+    await db.execute('CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)');
   }
 
   // --- SYNC ENGINE ---
- // --- SYNC ENGINE (OFFLINE FIRST) ---
-  
- // --- SYNC ENGINE (SMART & SCALABLE) ---
   bool _isSyncing = false; 
 
   Future<void> syncEverything() async {
-    if (_isSyncing) return; // Block duplicate calls
-
+    if (_isSyncing) return;
     var connectivityResult = await (Connectivity().checkConnectivity());
     if (connectivityResult == ConnectivityResult.none) return;
 
@@ -213,196 +56,201 @@ class LocalDB {
     final db = await instance.database;
     final userId = supabase.auth.currentUser?.id;
 
-    if (userId == null) {
-      _isSyncing = false; 
-      return;
-    }
+    if (userId == null) { _isSyncing = false; return; }
 
     try {
-      debugPrint("🚀 Starting Smart Sync...");
+      // 🔥 STEP 0: CHECK OWNER & WIPE IF NEEDED 🔥
+      final metaRes = await db.query('app_meta', where: 'key = ?', whereArgs: ['current_user_id']);
+      String? storedUserId = metaRes.isNotEmpty ? metaRes.first['value'] as String? : null;
 
-      // --- STEP A: UPLOAD LOCAL PROGRESS (Always keep this) ---
-      // This is already efficient. It only uploads what changed.
-      final unsyncedProgress = await db.query('user_progress', where: 'needs_sync = ?', whereArgs: [1]);
-      if (unsyncedProgress.isNotEmpty) {
-        debugPrint("⬆️ Uploading ${unsyncedProgress.length} changes...");
+      if (storedUserId != null && storedUserId != userId) {
+        debugPrint("🚨 DIFFERENT USER DETECTED! Wiping local data...");
+        // 1. Wipe progress tables
+        await db.delete('user_progress');
+        await db.delete('attempt_logs');
+        // 2. Update owner
+        await db.insert('app_meta', {'key': 'current_user_id', 'value': userId}, conflictAlgorithm: ConflictAlgorithm.replace);
+        // 3. Skip pushing (old data is irrelevant), jump straight to pulling
+      } else {
+        // Same user (or first login), save ID just in case
+        await db.insert('app_meta', {'key': 'current_user_id', 'value': userId}, conflictAlgorithm: ConflictAlgorithm.replace);
+
+        // --- 1. PUSH LOCAL PROGRESS (Only if same user) ---
+        final unsyncedProgress = await db.query('user_progress', where: 'needs_sync = ?', whereArgs: [1]);
         for (var row in unsyncedProgress) {
-            await supabase.from('user_word_progress').upsert({
-              'user_id': userId,
-              'word_id': row['word_id'],
-              'status': row['status'],
-              'strength': row['strength'],
-              'consecutive_correct': row['consecutive_correct'],
-              'next_due_at': row['next_due_at'],
-              'last_reviewed': row['last_reviewed'],
-              'total_attempts': row['total_attempts'],
-              'total_correct': row['total_correct'],
-            }, onConflict: 'user_id, word_id');
-
-            await db.update('user_progress', {'needs_sync': 0}, where: 'word_id = ?', whereArgs: [row['word_id']]);
+          await supabase.from('user_word_progress').upsert({
+            'user_id': userId, 'word_id': row['word_id'], 'status': row['status'], 
+            'strength': row['strength'], 'consecutive_correct': row['consecutive_correct'], 
+            'next_due_at': row['next_due_at'], 'last_reviewed': row['last_reviewed'], 
+            'total_attempts': row['total_attempts'], 'total_correct': row['total_correct'],
+          }, onConflict: 'user_id, word_id');
+          await db.update('user_progress', {'needs_sync': 0}, where: 'word_id = ?', whereArgs: [row['word_id']]);
         }
       }
 
-     // --- STEP B: SMART DOWNLOAD (The Optimization) ---
-      
-      // 1. Check Local Count
+      // --- 2. PULL LESSONS ---
+      final cloudLessons = await supabase.from('lessons').select();
+      final lessonBatch = db.batch();
+      for (var l in cloudLessons) {
+        lessonBatch.insert('lessons', {
+          'id': l['id'], 'title': l['title'], 'chapter_number': l['chapter_number'], 'book_id': l['book_id']
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+      await lessonBatch.commit(noResult: true);
+
+      // --- 3. PULL WORDS (If empty) ---
       final localCountRes = await db.rawQuery('SELECT COUNT(*) FROM words');
       int localCount = Sqflite.firstIntValue(localCountRes) ?? 0;
-
-      // 2. Check Server Count (Fixed for v2 SDK)
-      // ✅ FIX: Use .count() directly. It performs a HEAD request and returns an int.
-      final int serverCount = await supabase
-          .from('words')
-          .count();
-
-      debugPrint("📊 Check: Phone has $localCount words. Server has $serverCount.");
-
-      // 3. DECIDE: Do we need to download?
-      if (serverCount == localCount) {
-        debugPrint("✅ Sync Optimized: No new words to download. Skipping.");
-      } else {
-        // Only if numbers don't match, we download the new stuff
-        debugPrint("📥 Found new content! Downloading difference...");
-        
-        List<dynamic> allWords = [];
+      
+      if (localCount == 0) {
         int start = 0;
-        const int batchSize = 1000;
-        bool moreAvailable = true;
-
-        while (moreAvailable) {
-          final batch = await supabase
-              .from('words')
-              .select()
-              .range(start, start + batchSize - 1);
-
-          if (batch.isEmpty) {
-            moreAvailable = false;
+        bool fetchingWords = true;
+        while (fetchingWords) {
+          final cloudWords = await supabase.from('words')
+              .select('id, lesson_id, es, en')
+              .range(start, start + 999);
+          
+          if (cloudWords.isEmpty) {
+            fetchingWords = false;
           } else {
-            allWords.addAll(batch);
-            start += batchSize;
-            if (batch.length < batchSize) moreAvailable = false;
+            final wordBatch = db.batch();
+            for (var w in cloudWords) {
+              wordBatch.insert('words', {
+                'id': w['id'], 'lesson_id': w['lesson_id'], 'es': w['es'], 'en': w['en']
+              }, conflictAlgorithm: ConflictAlgorithm.replace);
+            }
+            await wordBatch.commit(noResult: true);
+            start += 1000;
           }
         }
-        
-        // Save to DB
-        final batchOps = db.batch();
-        for (var w in allWords) {
-          batchOps.insert('words', {
-            'id': w['id'], 
-            'lesson_id': w['lesson_id'], 
-            'es': w['es'], 
-            'en': w['en']
-          }, conflictAlgorithm: ConflictAlgorithm.replace); 
-        }
-        await batchOps.commit(noResult: true);
-        debugPrint("✅ Updated ${allWords.length} words.");
       }
+
+      // --- 4. PULL REMOTE PROGRESS (Restore correct user data) ---
+      final remoteProgress = await supabase.from('user_word_progress').select().eq('user_id', userId);
+      if (remoteProgress.isNotEmpty) {
+        final progressBatch = db.batch();
+        for (var p in remoteProgress) {
+          progressBatch.insert('user_progress', {
+            'word_id': p['word_id'], 'status': p['status'], 'strength': p['strength'],
+            'last_reviewed': p['last_reviewed'], 'next_due_at': p['next_due_at'],
+            'consecutive_correct': p['consecutive_correct'], 'total_attempts': p['total_attempts'],
+            'total_correct': p['total_correct'], 'needs_sync': 0
+          }, conflictAlgorithm: ConflictAlgorithm.replace);
+        }
+        await progressBatch.commit(noResult: true);
+      }
+
+      // --- 5. FINISH ---
+      notifyDataChanged(); 
+      debugPrint("✅ Sync Complete for User: $userId");
 
     } catch (e) {
       debugPrint("❌ Sync Error: $e");
     } finally {
-      _isSyncing = false; 
+      _isSyncing = false;
     }
   }
 
-  // Get Stats for Dashboard
+  // =========================================================
+  // 📊 DASHBOARD DATA (With Per-Lesson Forecast)
+  // =========================================================
   Future<List<LessonData>> getDashboardLessons() async {
     final db = await instance.database;
-    final nowStr = DateTime.now().toUtc().toIso8601String();
+    final now = DateTime.now();
+    final todayMidnight = DateTime(now.year, now.month, now.day);
 
-    // Fetch all lessons
     final lessons = await db.query('lessons', orderBy: 'chapter_number ASC');
     List<LessonData> results = [];
 
     for (var l in lessons) {
       final lessonId = l['id'] as int;
       
-      // Count total words in this lesson
-      final totalRes = await db.rawQuery('SELECT COUNT(*) as count FROM words WHERE lesson_id = ?', [lessonId]);
-      int total = Sqflite.firstIntValue(totalRes) ?? 0;
+      // Get ALL words + progress for this lesson
+      final wordsData = await db.rawQuery('''
+        SELECT up.status, up.next_due_at 
+        FROM words w
+        LEFT JOIN user_progress up ON w.id = up.word_id
+        WHERE w.lesson_id = ?
+      ''', [lessonId]);
 
-      // Count Mastered (Green)
-      // Status is 'learned' or 'consolidating' AND due date is in the future
-      final learnedRes = await db.rawQuery('''
-        SELECT COUNT(*) as count FROM user_progress up
-        JOIN words w ON up.word_id = w.id
-        WHERE w.lesson_id = ? 
-        AND (up.status = 'learned' OR up.status = 'consolidating')
-        AND up.next_due_at > ?
-      ''', [lessonId, nowStr]);
-      int learned = Sqflite.firstIntValue(learnedRes) ?? 0;
+      int learned = 0;
+      int learning = 0;
+      int unseen = 0;
+      
+      // [Late, Today, Tmrw, +2, +3, +4, +5+]
+      List<int> forecast = List.filled(7, 0); 
 
-      // Count Review (Orange)
-      // Status 'learning' OR (Status known AND due date is past)
-      final reviewRes = await db.rawQuery('''
-        SELECT COUNT(*) as count FROM user_progress up
-        JOIN words w ON up.word_id = w.id
-        WHERE w.lesson_id = ? 
-        AND (
-          up.status = 'learning' 
-          OR 
-          ((up.status = 'learned' OR up.status = 'consolidating') AND up.next_due_at <= ?)
-        )
-      ''', [lessonId, nowStr]);
-      int review = Sqflite.firstIntValue(reviewRes) ?? 0;
+      for (var row in wordsData) {
+        String status = row['status'] as String? ?? 'new';
+        String? nextDueStr = row['next_due_at'] as String?;
 
-      int unseen = total - (learned + review);
-      if (unseen < 0) unseen = 0;
+        // A. Basic Counts
+        if (status == 'new') {
+          unseen++;
+        } else if (status == 'learning') {
+          learning++;
+        } else if (status == 'consolidating' || status == 'learned') {
+          if (nextDueStr != null) {
+             DateTime due = DateTime.parse(nextDueStr).toLocal();
+             if (due.isBefore(now)) learning++; else learned++;
+          } else {
+             learned++;
+          }
+        }
+
+        // B. Forecast Logic (For the Bar Chart)
+        if (nextDueStr != null) {
+          DateTime due = DateTime.parse(nextDueStr).toLocal();
+          DateTime dueMidnight = DateTime(due.year, due.month, due.day);
+          int diffDays = dueMidnight.difference(todayMidnight).inDays;
+
+          if (diffDays < 0) forecast[0]++; // Late
+          else if (diffDays < 7) forecast[diffDays]++; 
+        }
+      }
 
       results.add(LessonData(
         id: lessonId,
         chapter_number: l['chapter_number'] as int,
         title: l['title'] as String,
         learned: learned,
-        learning: review,
-        unseen: unseen
+        learning: learning,
+        unseen: unseen,
+        forecast: forecast,
       ));
     }
     return results;
   }
 
-  // Save Progress Offline
-  Future<void> updateProgressLocal({
-    required int wordId,
-    required String status,
-    required double strength,
-    required DateTime nextDue,
-    required int streak,
-    required int totalAttempts,
-    required int totalCorrect,
-    required bool isCorrect
-  }) async {
+  // Update Progress
+  Future<void> updateProgressLocal({required int wordId, required String status, required double strength, required DateTime nextDue, required int streak, required int totalAttempts, required int totalCorrect, required bool isCorrect}) async {
     final db = await instance.database;
-    
-    await db.insert('user_progress', {
-      'word_id': wordId,
-      'status': status,
-      'strength': strength,
-      'consecutive_correct': streak,
-      'next_due_at': nextDue.toIso8601String(),
-      'last_reviewed': DateTime.now().toUtc().toIso8601String(),
-      'total_attempts': totalAttempts,
-      'total_correct': totalCorrect,
-      'needs_sync': 1 
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
-
-    await db.insert('attempt_logs', {
-      'word_id': wordId,
-      'correct': isCorrect ? 1 : 0,
-      'attempted_at': DateTime.now().toUtc().toIso8601String()
-    });
-    
-    syncEverything(); // Try to push if online
+    await db.insert('user_progress', {'word_id': wordId, 'status': status, 'strength': strength, 'consecutive_correct': streak, 'next_due_at': nextDue.toIso8601String(), 'last_reviewed': DateTime.now().toUtc().toIso8601String(), 'total_attempts': totalAttempts, 'total_correct': totalCorrect, 'needs_sync': 1}, conflictAlgorithm: ConflictAlgorithm.replace);
+    await db.insert('attempt_logs', {'word_id': wordId, 'correct': isCorrect ? 1 : 0, 'attempted_at': DateTime.now().toUtc().toIso8601String(), 'synced': 0});
+    syncEverything(); 
   }
+  
+  // Helpers
+  Future<void> forceDownloadChapter6() async {} 
+  Future<void> findHiddenWords() async {}
 }
 
-// Data class for UI
 class LessonData { 
   final int id; 
   final String title; 
   final int learned; 
   final int learning; 
   final int unseen; 
-  final int chapter_number; 
-  LessonData({required this.id, required this.title, required this.learned, required this.learning, required this.unseen, required this.chapter_number}); 
+  final int chapter_number;
+  final List<int> forecast; 
+
+  LessonData({
+    required this.id, 
+    required this.title, 
+    required this.learned, 
+    required this.learning, 
+    required this.unseen, 
+    required this.chapter_number,
+    required this.forecast,
+  }); 
 }

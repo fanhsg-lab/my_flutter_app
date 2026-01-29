@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -20,8 +21,7 @@ class BubblePage extends StatefulWidget {
   State<BubblePage> createState() => _BubblePageState();
 }
 
-class _BubblePageState extends State<BubblePage>
-    with TickerProviderStateMixin, WidgetsBindingObserver { 
+class _BubblePageState extends State<BubblePage> with TickerProviderStateMixin, WidgetsBindingObserver { 
   List<Map<String, dynamic>> _queue = [];
   final List<Map<String, dynamic>> _pendingUpdates = [];
 
@@ -41,10 +41,6 @@ class _BubblePageState extends State<BubblePage>
   late final AnimationController _popController;
   late final Animation<double> _scaleAnimation;
   
-  // Breathing Animation Controller
-  late final AnimationController _breathingController;
-  
-  // Sparkle Controller
   late final AnimationController _sparkleController;
   bool _showSparkles = false;
 
@@ -66,16 +62,9 @@ class _BubblePageState extends State<BubblePage>
       reverseCurve: Curves.easeIn,
     );
 
-    // Setup Breathing Animation (Idle pulse)
-    _breathingController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 2),
-    )..repeat(reverse: true);
-
-    // Setup Sparkle Animation
     _sparkleController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1000), // Longer explosion
+      duration: const Duration(milliseconds: 800),
     );
 
     _flutterTts.setLanguage("es-ES");
@@ -83,8 +72,7 @@ class _BubblePageState extends State<BubblePage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
       _saveSessionToDB();
     }
   }
@@ -93,7 +81,6 @@ class _BubblePageState extends State<BubblePage>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _popController.dispose();
-    _breathingController.dispose(); 
     _sparkleController.dispose();   
     _flutterTts.stop();
     _saveSessionToDB();
@@ -103,13 +90,13 @@ class _BubblePageState extends State<BubblePage>
   Future<void> _saveSessionToDB() async {
     if (_pendingUpdates.isEmpty) return;
 
-    int batchCorrect = _pendingUpdates.where((u) => u['isCorrect'] == true).length;
-    double accuracy = _pendingUpdates.length > 0 ? batchCorrect / _pendingUpdates.length : 0.0;
-    
-    if (accuracy >= 0.8) _userLearningRate = (_userLearningRate + 0.05).clamp(1.5, 3.5);
-    else if (accuracy <= 0.6) _userLearningRate = (_userLearningRate - 0.05).clamp(1.5, 3.5);
-    
     try {
+       int batchCorrect = _pendingUpdates.where((u) => u['isCorrect'] == true).length;
+       double accuracy = _pendingUpdates.length > 0 ? batchCorrect / _pendingUpdates.length : 0.0;
+       
+       if (accuracy >= 0.8) _userLearningRate = (_userLearningRate + 0.05).clamp(1.5, 3.5);
+       else if (accuracy <= 0.6) _userLearningRate = (_userLearningRate - 0.05).clamp(1.5, 3.5);
+
        Supabase.instance.client.from('profiles').upsert({
          'id': Supabase.instance.client.auth.currentUser?.id,
          'learning_rate': _userLearningRate
@@ -118,8 +105,6 @@ class _BubblePageState extends State<BubblePage>
 
     List<Map<String, dynamic>> batchToSave = List.from(_pendingUpdates);
     _pendingUpdates.clear();
-
-    debugPrint("💾 Saving batch of ${batchToSave.length} updates...");
     
     for (var update in batchToSave) {
       await LocalDB.instance.updateProgressLocal(
@@ -133,9 +118,7 @@ class _BubblePageState extends State<BubblePage>
         isCorrect: update['isCorrect']
       );
     }
-    debugPrint("🔔 Ringing the bell: Data changed!");
     LocalDB.instance.notifyDataChanged();
-    debugPrint("✅ Batch save complete!");
   }
 
   void _restartSession() {
@@ -153,32 +136,20 @@ class _BubblePageState extends State<BubblePage>
   Future<void> _loadSessionData() async {
     try {
       final db = await LocalDB.instance.database;
-      final wordsData = await db.query(
-        'words',
-        where: 'lesson_id = ?',
-        whereArgs: [widget.lessonId],
-        orderBy: 'id ASC',
-      );
-
+      final wordsData = await db.query('words', where: 'lesson_id = ?', whereArgs: [widget.lessonId]);
       final progressData = await db.query('user_progress');
-      Map<int, Map<String, dynamic>> progressMap = {
-        for (var p in progressData) p['word_id'] as int: p,
-      };
+      Map<int, Map<String, dynamic>> progressMap = { for (var p in progressData) p['word_id'] as int: p };
 
       List<Map<String, dynamic>> reviewQueue = []; 
       List<Map<String, dynamic>> learningQueue = []; 
       List<Map<String, dynamic>> newQueue = []; 
-
       DateTime now = DateTime.now().toUtc();
 
       for (var word in wordsData) {
         int wordId = word['id'] as int;
         var progress = progressMap[wordId];
         String status = progress?['status'] as String? ?? 'new';
-
-        DateTime? nextDue = progress?['next_due_at'] != null
-            ? DateTime.parse(progress!['next_due_at'] as String).toUtc()
-            : null;
+        DateTime? nextDue = progress?['next_due_at'] != null ? DateTime.parse(progress!['next_due_at'] as String).toUtc() : null;
         bool isTimeUp = nextDue == null || nextDue.isBefore(now);
 
         Map<String, dynamic> item = {
@@ -193,36 +164,20 @@ class _BubblePageState extends State<BubblePage>
           'total_correct': progress?['total_correct'] ?? 0,
         };
 
-        if (status == 'learning') {
-          learningQueue.add(item);
-        } else if ((status == 'consolidating' || status == 'learned') && isTimeUp) {
-          reviewQueue.add(item);
-        } else if (status == 'new' || progress == null) {
-          newQueue.add(item);
-        }
+        if (status == 'learning') learningQueue.add(item);
+        else if ((status == 'consolidating' || status == 'learned') && isTimeUp) reviewQueue.add(item);
+        else if (status == 'new' || progress == null) newQueue.add(item);
       }
 
       List<Map<String, dynamic>> finalSelection = [];
-      while (finalSelection.length < 8 && reviewQueue.isNotEmpty) {
-        finalSelection.add(reviewQueue.removeAt(0));
-      }
-      while (finalSelection.length < 10 && learningQueue.isNotEmpty) {
-        finalSelection.add(learningQueue.removeAt(0));
-      }
-      while (finalSelection.length < 10 && newQueue.isNotEmpty) {
-        finalSelection.add(newQueue.removeAt(0));
-      }
-      while (finalSelection.length < 10 && reviewQueue.isNotEmpty) {
-        finalSelection.add(reviewQueue.removeAt(0));
-      }
+      while (finalSelection.length < 8 && reviewQueue.isNotEmpty) finalSelection.add(reviewQueue.removeAt(0));
+      while (finalSelection.length < 10 && learningQueue.isNotEmpty) finalSelection.add(learningQueue.removeAt(0));
+      while (finalSelection.length < 10 && newQueue.isNotEmpty) finalSelection.add(newQueue.removeAt(0));
+      while (finalSelection.length < 10 && reviewQueue.isNotEmpty) finalSelection.add(reviewQueue.removeAt(0));
 
       finalSelection.shuffle();
 
-      if (mounted)
-        setState(() {
-          _queue = finalSelection;
-          _isLoading = false;
-        });
+      if (mounted) setState(() { _queue = finalSelection; _isLoading = false; });
     } catch (e) {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -238,10 +193,7 @@ class _BubblePageState extends State<BubblePage>
     DateTime now = DateTime.now().toUtc();
     DateTime nextDueAt = now;
 
-    if (status == 'new') {
-      status = 'learning';
-      strength = 0.0;
-    }
+    if (status == 'new') { status = 'learning'; strength = 0.0; }
 
     if (isCorrect) {
       if (status == 'learning') {
@@ -252,9 +204,7 @@ class _BubblePageState extends State<BubblePage>
           double rewardFloat = 10.0 + (20.0 * efficiency);
           nextDueAt = now.add(Duration(minutes: rewardFloat.round()));
           strength = rewardFloat.round() / 1440.0;
-        } else {
-          nextDueAt = now;
-        }
+        } 
       } else {
         streak = 0;
         strength = strength * _userLearningRate;
@@ -263,20 +213,11 @@ class _BubblePageState extends State<BubblePage>
         nextDueAt = now.add(Duration(minutes: (strength * 1440).round()));
       }
     } else {
-      if (status == 'learning') {
-        streak = 0;
-        nextDueAt = now;
-      } else {
+      if (status == 'learning') { streak = 0; } 
+      else {
         strength = strength * 0.5;
-        if (strength < 0.005) {
-          status = 'learning';
-          streak = 0;
-          strength = 0.0;
-          nextDueAt = now;
-        } else {
-          status = 'consolidating';
-          nextDueAt = now.add(const Duration(minutes: 10));
-        }
+        if (strength < 0.005) { status = 'learning'; streak = 0; strength = 0.0; } 
+        else { status = 'consolidating'; nextDueAt = now.add(const Duration(minutes: 10)); }
       }
     }
 
@@ -290,21 +231,14 @@ class _BubblePageState extends State<BubblePage>
     });
 
     _pendingUpdates.add({
-      'wordId': currentItem['word_id'],
-      'status': status,
-      'strength': strength,
-      'nextDue': nextDueAt,
-      'streak': streak,
-      'totalAttempts': totalAttempts,
-      'totalCorrect': totalCorrect,
-      'isCorrect': isCorrect,
+      'wordId': currentItem['word_id'], 'status': status, 'strength': strength,
+      'nextDue': nextDueAt, 'streak': streak, 'totalAttempts': totalAttempts,
+      'totalCorrect': totalCorrect, 'isCorrect': isCorrect,
     });
   }
 
   void _handleAction({required bool isUp}) async {
     HapticFeedback.heavyImpact();
-    
-    // ✨ TRIGGER SPARKLES IF CORRECT
     if (isUp) {
        _sparkleController.reset();
        _sparkleController.forward();
@@ -318,7 +252,7 @@ class _BubblePageState extends State<BubblePage>
         _currentIndex++;
         _dragDistance = 0.0;
         _isDragging = false;
-        _showSparkles = false; // Reset sparkles for next card
+        _showSparkles = false;
       });
       _popController.forward();
       if (_currentIndex >= _queue.length) _saveSessionToDB();
@@ -338,12 +272,9 @@ class _BubblePageState extends State<BubblePage>
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading)
-      return const Scaffold(
-        backgroundColor: AppColors.background,
-        body: Center(child: CircularProgressIndicator()),
-      );
+    if (_isLoading) return const Scaffold(backgroundColor: AppColors.background, body: Center(child: CircularProgressIndicator()));
 
+    // --- FINISHED SCREEN ---
     if (_currentIndex >= _queue.length) {
       return Scaffold(
         backgroundColor: AppColors.background,
@@ -372,157 +303,208 @@ class _BubblePageState extends State<BubblePage>
       );
     }
 
-    // --- ANIMATION & VISUAL LOGIC ---
+    // --- MAIN GAME ---
     double progress = (_dragDistance.abs() / _triggerThreshold).clamp(0.0, 1.0);
     bool isUp = _dragDistance < 0;
     bool isDown = _dragDistance > 0;
     String displayedText = _isDragging ? currentItem['reveal'] : currentItem['front'];
     
-    // Minimalist Color Logic
-    Color bubbleColor = Color.lerp(
-      AppColors.cardColor, // Neutral state
-      isUp ? Colors.green.shade600 : (isDown ? Colors.red.shade600 : AppColors.cardColor),
-      progress,
+    Color glowColor = isUp 
+      ? AppColors.success 
+      : (isDown ? Colors.redAccent : Colors.transparent);
+      
+    Color borderColor = Color.lerp(
+      Colors.white.withOpacity(0.3), 
+      glowColor.withOpacity(0.8), 
+      progress
     )!;
-
-    // Breathing Animation (Scale)
-    double breathingScale = 1.0 + (_breathingController.value * 0.1); // Increased breathing range
 
     return Scaffold(
       backgroundColor: AppColors.background,
-      body: SafeArea(
+      // Full Screen Gesture Detector
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent, 
+        onPanStart: (_) {
+          HapticFeedback.selectionClick();
+          setState(() => _isDragging = true);
+        },
+        onPanUpdate: (details) {
+          setState(() => _dragDistance += details.delta.dy);
+        },
+        onPanEnd: (_) {
+          if (_dragDistance <= -_triggerThreshold) _handleAction(isUp: true);
+          else if (_dragDistance >= _triggerThreshold) _handleAction(isUp: false);
+          else setState(() { _dragDistance = 0.0; _isDragging = false; });
+        },
         child: Stack(
           children: [
-             // ✨ FIXED BUBBLE BATH BACKGROUND
              const Positioned.fill(child: BubbleBathBackground()),
 
-             // Gradient Hint overlay
-             AnimatedOpacity(
-               duration: const Duration(milliseconds: 200),
-               opacity: progress * 0.2, 
-               child: Container(
-                 decoration: BoxDecoration(
-                   gradient: LinearGradient(
-                     begin: Alignment.topCenter, end: Alignment.bottomCenter,
-                     colors: isUp 
-                        ? [Colors.green.withOpacity(0.3), Colors.transparent]
-                        : (isDown ? [Colors.transparent, Colors.red.withOpacity(0.3)] : [Colors.transparent, Colors.transparent])
-                   )
-                 )
-               ),
-             ),
+             SafeArea(
+               child: Stack(
+                 children: [
+                    // Targets
+                    _buildTarget(Alignment.topCenter, Icons.check_circle, AppColors.success, isUp ? progress : 0.0),
+                    _buildTarget(Alignment.bottomCenter, Icons.cancel, Colors.redAccent, isDown ? progress : 0.0),
+                    
+                    // Sound Button (Top Left)
+                    Positioned(
+                      top: 20, 
+                      left: 20,
+                      child: FloatingActionButton.small(
+                        heroTag: "speak",
+                        backgroundColor: AppColors.primary,
+                        elevation: 4,
+                        onPressed: _speak,
+                        child: const Icon(Icons.volume_up_rounded, color: Colors.black),
+                      ),
+                    ),
 
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onPanStart: (_) {
-                HapticFeedback.selectionClick();
-                setState(() => _isDragging = true);
-              },
-              onPanUpdate: (details) {
-                setState(() => _dragDistance += details.delta.dy);
-              },
-              onPanEnd: (_) {
-                if (_dragDistance <= -_triggerThreshold)
-                  _handleAction(isUp: true);
-                else if (_dragDistance >= _triggerThreshold)
-                  _handleAction(isUp: false);
-                else
-                  setState(() {
-                    _dragDistance = 0.0;
-                    _isDragging = false;
-                  });
-              },
-              child: Stack(
-                children: [
-                  _buildTarget(Alignment.topCenter, Icons.check_circle, AppColors.success, isUp ? progress : 0.0),
-                  _buildTarget(Alignment.bottomCenter, Icons.cancel, Colors.redAccent, isDown ? progress : 0.0),
-                  
-                  Positioned(top: 20, right: 30, child: _buildScore("Correct", _sessionCorrect, AppColors.success)),
-                  Positioned(bottom: 20, right: 30, child: _buildScore("Review", _sessionWrong, Colors.redAccent)),
-                  
-                  Positioned(top: 20, left: 20, child: FloatingActionButton.small(heroTag: "close", backgroundColor: AppColors.cardColor, onPressed: () => Navigator.pop(context), child: const Icon(Icons.close, color: Colors.white))),
+                    // Close Button (Top Right)
+                    Positioned(
+                      top: 20, 
+                      right: 20, 
+                      child: FloatingActionButton.small(
+                        heroTag: "close", 
+                        backgroundColor: AppColors.cardColor, 
+                        elevation: 0,
+                        onPressed: () => Navigator.pop(context), 
+                        child: const Icon(Icons.close, color: Colors.white)
+                      )
+                    ),
 
-                  // --- THE BUBBLE ---
-                  Center(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 20.0),
+                    // ✅ SCORES AT BOTTOM
+                    // Bottom Left: Correct Score
+                    Positioned(
+                      bottom: 40, 
+                      left: 30, 
+                      child: _buildScore("CORRECT", _sessionCorrect, AppColors.success)
+                    ),
+
+                    // Bottom Right: Review (Wrong) Score (Replaces "Remaining")
+                    Positioned(
+                      bottom: 40,
+                      right: 30,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          const Text("REVIEW", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey)),
+                          Text("$_sessionWrong", style: const TextStyle(fontSize: 32, fontWeight: FontWeight.w900, color: Colors.redAccent)),
+                        ],
+                      ),
+                    ),
+
+                    // --- THE GLASS BUBBLE ---
+                    Center(
                       child: Transform.translate(
-                         // 🚀 PHYSICS: Physically move the bubble up/down
                         offset: Offset(0, _dragDistance), 
                         child: Transform.rotate(
-                          // 🚀 PHYSICS: Tilt heavier
-                          angle: (_dragDistance * 0.005), 
+                          angle: (_dragDistance * 0.001), 
                           child: ScaleTransition(
                             scale: _scaleAnimation,
                             child: Transform.scale(
-                              // Breathing Effect
-                              scale: _isDragging ? 1.05 : breathingScale, 
-                              child: AnimatedContainer(
-                                duration: const Duration(milliseconds: 100),
-                                height: 260, 
-                                width: 260,
-                                alignment: Alignment.center,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  // ✨ MINIMALIST FLAT COLOR + BORDER
-                                  color: bubbleColor,
-                                  border: Border.all(
-                                    color: Colors.white.withOpacity(0.2 + (progress * 0.3)), 
-                                    width: 2 + (progress * 2)
-                                  ),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: bubbleColor.withOpacity(0.5),
-                                      blurRadius: 20 + (progress * 10),
-                                      spreadRadius: progress * 5,
-                                    ),
-                                  ],
-                                ),
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(
-                                      displayedText,
-                                      textAlign: TextAlign.center,
-                                      style: const TextStyle(fontSize: 34, fontWeight: FontWeight.bold, color: Colors.white),
-                                    ),
-                                    if (_isDragging) 
-                                      const Padding(
-                                        padding: EdgeInsets.only(top: 10.0),
-                                        child: Text("(Release to select)", style: TextStyle(color: Colors.white70, fontSize: 12)),
-                                      )
-                                  ],
-                                ),
+                              scale: _isDragging ? 1.05 : 1.0, 
+                              child: _buildGlassBubble(
+                                text: displayedText, 
+                                glowColor: glowColor, 
+                                borderColor: borderColor, 
+                                progress: progress,
+                                isUp: isUp,
+                                isDown: isDown
                               ),
                             ),
                           ),
                         ),
                       ),
                     ),
-                  ),
 
-                  // ✨ BIGGER SPARKLE EXPLOSION
-                  if (_showSparkles)
-                    Positioned.fill(
-                      child: SparkleExplosion(controller: _sparkleController),
-                    ),
+                    // Sparkles (Overlay)
+                    if (_showSparkles)
+                      Positioned.fill(child: SparkleExplosion(controller: _sparkleController)),
+                 ],
+               ),
+             ),
+          ],
+        ),
+      ),
+    );
+  }
 
-                  Positioned(
-                    bottom: 120, right: 0, left: 0,
-                    child: Center(
-                      child: FloatingActionButton(
-                        heroTag: "speak",
-                        backgroundColor: AppColors.cardColor,
-                        elevation: 4,
-                        onPressed: _speak,
-                        child: const Icon(Icons.volume_up_rounded, color: Colors.white, size: 28),
-                      ),
-                    ),
-                  ),
+  // Premium Frosted Glass Orb
+  Widget _buildGlassBubble({
+    required String text, 
+    required Color glowColor, 
+    required Color borderColor, 
+    required double progress,
+    required bool isUp, 
+    required bool isDown
+  }) {
+    return Container(
+      width: 280,
+      height: 280,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        boxShadow: [
+          if (progress > 0.05)
+            BoxShadow(
+              color: glowColor.withOpacity(0.4 * progress),
+              blurRadius: 30 + (20 * progress),
+              spreadRadius: 5 + (10 * progress),
+            ),
+          BoxShadow(
+            color: Colors.black.withOpacity(0.3),
+            blurRadius: 20,
+            offset: const Offset(0, 10),
+          )
+        ],
+      ),
+      child: ClipOval(
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+          child: Container(
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  Colors.white.withOpacity(0.2), 
+                  Colors.white.withOpacity(0.05),
                 ],
               ),
+              border: Border.all(color: borderColor, width: 1.5),
             ),
-          ],
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: Text(
+                    text,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 32, 
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white, 
+                      letterSpacing: 0.5,
+                      shadows: [
+                        Shadow(color: Colors.black26, blurRadius: 8, offset: Offset(0, 2))
+                      ]
+                    ),
+                  ),
+                ),
+                AnimatedOpacity(
+                  duration: const Duration(milliseconds: 200),
+                  opacity: progress > 0.1 ? 1.0 : 0.0,
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 12.0),
+                   
+                  ),
+                )
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -543,7 +525,7 @@ class _BubblePageState extends State<BubblePage>
 
   Widget _buildScore(String label, int score, Color color) {
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.end,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(label.toUpperCase(), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey)),
         Text("$score", style: TextStyle(fontSize: 32, fontWeight: FontWeight.w900, color: color)),
@@ -552,7 +534,6 @@ class _BubblePageState extends State<BubblePage>
   }
 }
 
-// ✨ FIXED: FULL SCREEN BUBBLE BATH BACKGROUND
 class BubbleBathBackground extends StatefulWidget {
   const BubbleBathBackground({super.key});
 
@@ -568,8 +549,7 @@ class _BubbleBathBackgroundState extends State<BubbleBathBackground> with Single
   @override
   void initState() {
     super.initState();
-    // Continuous loop
-    _controller = AnimationController(vsync: this, duration: const Duration(seconds: 20))..repeat();
+    _controller = AnimationController(vsync: this, duration: const Duration(seconds: 60))..repeat();
     for (int i = 0; i < 25; i++) {
       _bubbles.add(_BackgroundBubble(_random));
     }
@@ -590,21 +570,15 @@ class _BubbleBathBackgroundState extends State<BubbleBathBackground> with Single
           builder: (context, constraints) {
              final height = constraints.maxHeight;
              final width = constraints.maxWidth;
-             
              return Stack(
                children: _bubbles.map((bubble) {
-                 // 🚀 LOGIC FIX: Continuous wrapping
-                 // We offset by controller value, but use modulo to wrap around seamlessly
-                 double movement = _controller.value * bubble.speed * height * 2; 
-                 double y = (bubble.startY - movement) % (height + 100); 
-                 
-                 // If it goes above screen (negative), it wraps to bottom automatically via math logic
-                 // But in Dart % on negative can be weird, so we adjust:
-                 if (y < -50) y = height + 50;
+                 double movement = _controller.value * bubble.speed * height * 4; 
+                 double y = (bubble.startY - movement) % (height + 200); 
+                 if (y < -100) y = height + 100;
 
                  return Positioned(
-                   left: bubble.xRatio * width, // Use Ratio for responsive width
-                   top: y,
+                   left: bubble.xRatio * width,
+                   top: y - 100,
                    child: Opacity(
                      opacity: bubble.opacity,
                      child: Container(
@@ -614,10 +588,7 @@ class _BubbleBathBackgroundState extends State<BubbleBathBackground> with Single
                          shape: BoxShape.circle,
                          gradient: LinearGradient(
                            begin: Alignment.bottomLeft, end: Alignment.topRight,
-                           colors: [
-                             Colors.white.withOpacity(0.05),
-                             AppColors.primary.withOpacity(0.15)
-                           ]
+                           colors: [Colors.white.withOpacity(0.05), AppColors.primary.withOpacity(0.1)]
                          ),
                          border: Border.all(color: Colors.white.withOpacity(0.05), width: 1)
                        ),
@@ -641,15 +612,14 @@ class _BackgroundBubble {
   late double opacity;
 
   _BackgroundBubble(math.Random random) {
-    xRatio = random.nextDouble(); // 0.0 to 1.0 (Responsive Width)
-    startY = random.nextDouble() * 1000; // Initial Offset
+    xRatio = random.nextDouble(); 
+    startY = random.nextDouble() * 2000; 
     size = random.nextDouble() * 40 + 10; 
     speed = random.nextDouble() * 0.5 + 0.2; 
     opacity = random.nextDouble() * 0.3 + 0.1;
   }
 }
 
-// ✨ BIGGER SPARKLE EXPLOSION
 class SparkleExplosion extends StatelessWidget {
   final AnimationController controller;
   const SparkleExplosion({super.key, required this.controller});
@@ -660,19 +630,12 @@ class SparkleExplosion extends StatelessWidget {
       animation: controller,
       builder: (context, child) {
         return Stack(
-          children: List.generate(40, (index) { // INCREASED to 40 particles
+          children: List.generate(30, (index) { 
             final random = math.Random(index);
-            
-            // Explosion spread: Full 360 degrees
             final double direction = random.nextDouble() * 2 * math.pi; 
-            
-            // Longer distance
-            final double distance = random.nextDouble() * 500 * controller.value; 
-            
-            // Varied Sizes
-            final double size = random.nextDouble() * 12 * (1 - controller.value);
-            
-            final Color color = [AppColors.primary, Colors.white, Colors.cyanAccent, Colors.purpleAccent, Colors.amber][random.nextInt(5)];
+            final double distance = random.nextDouble() * 400 * controller.value; 
+            final double size = random.nextDouble() * 10 * (1 - controller.value);
+            final Color color = [AppColors.primary, Colors.white, Colors.amber][random.nextInt(3)];
             
             return Positioned(
               left: MediaQuery.of(context).size.width / 2 + (math.cos(direction) * distance) - (size/2),
@@ -680,13 +643,8 @@ class SparkleExplosion extends StatelessWidget {
               child: Opacity(
                 opacity: (1 - controller.value).clamp(0.0, 1.0),
                 child: Container(
-                  width: size,
-                  height: size,
-                  decoration: BoxDecoration(
-                    color: color, 
-                    shape: BoxShape.circle, 
-                    boxShadow: [BoxShadow(color: color.withOpacity(0.8), blurRadius: 8, spreadRadius: 2)]
-                  ),
+                  width: size, height: size,
+                  decoration: BoxDecoration(color: color, shape: BoxShape.circle, boxShadow: [BoxShadow(color: color.withOpacity(0.8), blurRadius: 5)]),
                 ),
               ),
             );
