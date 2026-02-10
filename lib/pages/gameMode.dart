@@ -3,24 +3,29 @@ import 'package:flutter/services.dart';
 import 'dart:math' as math;
 import 'package:flutter/scheduler.dart';
 import 'dart:async';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import '../local_db.dart';
 import '../theme.dart';
+import '../responsive.dart';
+import '../services/app_strings.dart';
 
 class GameQuizPage extends StatefulWidget {
   final int lessonId;
-  final bool isReversed; // true = Gr->Esp, false = Esp->Gr
+  final bool isReversed;
+  final String sourceLanguage;
 
-  const GameQuizPage({super.key, required this.lessonId, required this.isReversed});
+  const GameQuizPage({super.key, required this.lessonId, required this.isReversed, this.sourceLanguage = 'es'});
 
   @override
   State<GameQuizPage> createState() => _GameQuizPageState();
 }
 
 class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMixin {
-  
+
   List<Map<String, String>> _vocabulary = [];
+  List<Map<String, String>> _wordQueue = []; // Shuffled queue to prevent repetition
+  int _totalWordsInLesson = 0; // Track total words for progress
   bool _isLoading = true;
-  bool _isSessionComplete = false; // 🏁 To track when lesson is finished
+  bool _isSessionComplete = false;
 
   late Ticker _ticker;
   Size? _screenSize;
@@ -28,26 +33,60 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
   Map<String, String>? _targetWordPair;
   int _score = 0;
   final int _totalBalls = 6;
-  final double _ballRadius = 65.0; 
+  double _ballRadius = 65.0; // Will be set responsively
   final math.Random _random = math.Random();
-  
+
   bool _showFeedback = false;
-  String _feedbackText = ""; 
+  String _feedbackText = "";
   Timer? _feedbackTimer;
+
+  // Animation controllers for enhanced effects
+  late AnimationController _scoreAnimController;
+  late Animation<double> _scoreScale;
+
+  late AnimationController _feedbackAnimController;
+  late Animation<double> _feedbackScale;
+
+  int _combo = 0;
+  List<ParticleEffect> _particles = [];
+  String? _ballBeingRemoved;
+  bool _showCycleComplete = false;
+  Timer? _cycleCompleteTimer;
 
   @override
   void initState() {
     super.initState();
+    // Force landscape and fullscreen immersive mode
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.landscapeRight,
       DeviceOrientation.landscapeLeft,
     ]);
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
 
-    _fetchLessonWords(); 
+    // Initialize animation controllers
+    _scoreAnimController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 400),
+    );
+    _scoreScale = CurvedAnimation(
+      parent: _scoreAnimController,
+      curve: Curves.elasticOut,
+    );
+
+    _feedbackAnimController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+    _feedbackScale = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _feedbackAnimController, curve: Curves.easeOut),
+    );
+
+    _fetchLessonWords();
 
     _ticker = createTicker((elapsed) {
       if (_screenSize != null && !_isLoading && !_isSessionComplete && _vocabulary.isNotEmpty) {
         _updatePhysics();
+        _updateParticles();
       }
     });
     _ticker.start();
@@ -56,25 +95,20 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
   // 1. FETCH WORDS FOR SPECIFIC LESSON
   Future<void> _fetchLessonWords() async {
     try {
-      final supabase = Supabase.instance.client;
-      final rawResponse = await supabase
-          .from('words')
-          .select() 
-          .eq('lesson_id', widget.lessonId);
+      final db = await LocalDB.instance.database;
+      final rawResponse = await db.rawQuery('''
+        SELECT w.* FROM lesson_words lw
+        JOIN words w ON w.id = lw.word_id
+        WHERE lw.lesson_id = ?
+        ORDER BY w.id ASC
+      ''', [widget.lessonId]);
 
       List<Map<String, String>> loadedWords = [];
-      
+
       for (var row in rawResponse) {
-        String id = row['id'].toString(); 
-        String es_val = ""; 
-        String gr_val = ""; 
-
-        if (row.containsKey('es')) es_val = row['es'].toString();
-        else if (row.containsKey('spanish')) es_val = row['spanish'].toString();
-
-        if (row.containsKey('en')) gr_val = row['en'].toString();
-        else if (row.containsKey('english')) gr_val = row['english'].toString();
-        else if (row.containsKey('gr')) gr_val = row['gr'].toString();
+        String id = row['id'].toString();
+        String es_val = (row['es'] ?? '').toString();
+        String gr_val = (row['en'] ?? '').toString();
 
         if (es_val.isNotEmpty && gr_val.isNotEmpty) {
           if (widget.isReversed) {
@@ -88,6 +122,8 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
       if (mounted) {
         setState(() {
           _vocabulary = loadedWords;
+          _totalWordsInLesson = loadedWords.length;
+          _shuffleWordQueue(); // Initialize shuffled queue
           _isLoading = false;
           if (_vocabulary.isEmpty) _isSessionComplete = true; // Handle empty lesson
         });
@@ -102,7 +138,12 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
   void dispose() {
     _ticker.dispose();
     _feedbackTimer?.cancel();
+    _cycleCompleteTimer?.cancel();
+    _scoreAnimController.dispose();
+    _feedbackAnimController.dispose();
+    // Restore portrait orientation and show system UI
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
   }
 
@@ -114,11 +155,47 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
     }
   }
 
+  void _shuffleWordQueue() {
+    // Create a shuffled copy of all vocabulary words
+    _wordQueue = List.from(_vocabulary)..shuffle(_random);
+  }
+
   void _pickNewTarget() {
-     if (_vocabulary.isEmpty) return;
-     setState(() {
-       _targetWordPair = _vocabulary[_random.nextInt(_vocabulary.length)];
-     });
+    if (_vocabulary.isEmpty) return;
+
+    // If queue is empty, reshuffle to start a new cycle
+    if (_wordQueue.isEmpty) {
+      _showCycleCompleteMessage();
+      _shuffleWordQueue();
+    }
+
+    // Pick the next word from the queue
+    setState(() {
+      _targetWordPair = _wordQueue.removeAt(0);
+    });
+  }
+
+  void _showCycleCompleteMessage() {
+    _cycleCompleteTimer?.cancel();
+    setState(() => _showCycleComplete = true);
+
+    // Create celebration particles
+    if (_screenSize != null) {
+      for (int i = 0; i < 50; i++) {
+        double angle = (i / 50) * 2 * math.pi;
+        double speed = 4 + _random.nextDouble() * 6;
+        _particles.add(ParticleEffect(
+          position: Offset(_screenSize!.width / 2, _screenSize!.height / 2),
+          velocity: Offset(math.cos(angle) * speed, math.sin(angle) * speed),
+          color: AppColors.primary,
+          life: 1.5,
+        ));
+      }
+    }
+
+    _cycleCompleteTimer = Timer(const Duration(milliseconds: 2000), () {
+      if (mounted) setState(() => _showCycleComplete = false);
+    });
   }
 
   void _addNewBall({bool forceCorrectAnswer = false}) {
@@ -180,40 +257,88 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
 
   void _handleBallTap(GameBall tappedBall) {
     bool isCorrect = tappedBall.wordPair['question'] == _targetWordPair!['question'];
-    String correctAnswer = _targetWordPair!['question']!; 
+    String correctAnswer = _targetWordPair!['question']!;
     String wordId = _targetWordPair!['id']!;
+
+    // Haptic feedback
+    HapticFeedback.mediumImpact();
 
     if (isCorrect) {
       // ✅ LOGIC: Correct Answer
       setState(() {
-        _score += 10;
+        _score += 10 + (_combo * 5); // Combo bonus
+        _combo++;
         _showFeedback = false;
-        
+        _ballBeingRemoved = tappedBall.id;
+
+        // Trigger score animation
+        _scoreAnimController.reset();
+        _scoreAnimController.forward();
+
+        // Create particle explosion
+        _createParticleExplosion(tappedBall.position, AppColors.success);
+
         // 1. Remove the clicked ball
         _balls.removeWhere((ball) => ball.id == tappedBall.id);
 
-        // 2. 🚨 REMOVE WORD FROM POOL so it doesn't repeat!
+        // 2. Remove word from both vocabulary AND queue
         _vocabulary.removeWhere((w) => w['id'] == wordId);
+        _wordQueue.removeWhere((w) => w['id'] == wordId);
       });
 
-      // 3. CHECK WIN (Empty Pool)
+      // Reset ball removal flag
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (mounted) setState(() => _ballBeingRemoved = null);
+      });
+
+      // 3. CHECK IF ALL WORDS COMPLETED - Reload and reshuffle
       if (_vocabulary.isEmpty) {
-        setState(() => _isSessionComplete = true);
+        _fetchLessonWords(); // Reload all words and reshuffle
         return;
       }
 
-      // 4. Continue Game with REMAINING words
+      // 4. Continue Game - pick next word from queue
       _pickNewTarget();
       _respawnWithAntiCheat();
 
     } else {
       // ❌ LOGIC: Wrong Answer
+      HapticFeedback.vibrate();
+      _combo = 0; // Reset combo on wrong answer
+
+      _createParticleExplosion(tappedBall.position, AppColors.error);
+
       _triggerWrongFeedback(correctAnswer);
       setState(() {
+        _ballBeingRemoved = tappedBall.id;
         _pickNewTarget();
         _balls.removeWhere((ball) => ball.id == tappedBall.id);
         _respawnWithAntiCheat();
       });
+
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (mounted) setState(() => _ballBeingRemoved = null);
+      });
+    }
+  }
+
+  void _createParticleExplosion(Offset position, Color color) {
+    for (int i = 0; i < 20; i++) {
+      double angle = (i / 20) * 2 * math.pi;
+      double speed = 3 + _random.nextDouble() * 4;
+      _particles.add(ParticleEffect(
+        position: position,
+        velocity: Offset(math.cos(angle) * speed, math.sin(angle) * speed),
+        color: color,
+        life: 1.0,
+      ));
+    }
+  }
+
+  void _updateParticles() {
+    _particles.removeWhere((particle) => particle.life <= 0);
+    for (var particle in _particles) {
+      particle.update();
     }
   }
 
@@ -225,9 +350,16 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
       _showFeedback = true;
       _feedbackText = "$topWord :\n$correctBallText";
     });
-    
+
+    _feedbackAnimController.reset();
+    _feedbackAnimController.forward();
+
     _feedbackTimer = Timer(const Duration(milliseconds: 1800), () {
-      if (mounted) setState(() => _showFeedback = false);
+      if (mounted) {
+        _feedbackAnimController.reverse().then((_) {
+          if (mounted) setState(() => _showFeedback = false);
+        });
+      }
     });
   }
 
@@ -304,38 +436,14 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
 
   @override
   Widget build(BuildContext context) {
-    // 🏁 2. HANDLE WIN SCREEN (When all words are done)
-    if (_isSessionComplete) {
-       return Scaffold(
-        backgroundColor: AppColors.background,
-        appBar: AppBar(backgroundColor: Colors.transparent, elevation: 0, leading: const BackButton(color: Colors.white)),
-        body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.star, size: 80, color: Colors.amber),
-              const SizedBox(height: 24),
-              Text("Lesson Complete!", style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 12),
-              Text("Score: $_score", style: const TextStyle(color: Colors.white70, fontSize: 24)),
-              const SizedBox(height: 40),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 16)),
-                child: const Text("Back to Lessons", style: TextStyle(color: Colors.white, fontSize: 18)),
-              )
-            ],
-          ),
-        ),
-      );
-    }
+    final r = Responsive(context);
 
     return Scaffold(
-      backgroundColor: AppColors.background, 
-      body: _isLoading 
-        ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
-        : _vocabulary.isEmpty 
-           ? const Center(child: Text("No words in this lesson!", style: TextStyle(color: Colors.white)))
+      backgroundColor: AppColors.background,
+      body: _isLoading
+        ? Center(child: CircularProgressIndicator(color: AppColors.primary))
+        : _vocabulary.isEmpty
+           ? Center(child: Text(S.noWordsInLessonGame, style: TextStyle(color: Colors.white, fontSize: r.fontSize(16))))
            : LayoutBuilder(
             builder: (context, constraints) {
               if (constraints.maxWidth < constraints.maxHeight) {
@@ -343,6 +451,9 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
               }
               Size newSize = Size(constraints.maxWidth, constraints.maxHeight);
               _screenSize = newSize;
+
+              // Set responsive ball radius based on screen size
+              _ballRadius = r.gameBallRadius;
 
               if (_balls.isEmpty) {
                 WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -356,84 +467,407 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
                 color: AppColors.background,
                 child: Stack(
                   children: [
+                    // Render balls with enhanced visuals
                     ..._balls.map((ball) {
+                      bool isBeingRemoved = _ballBeingRemoved == ball.id;
+
                       return Positioned(
                         left: ball.position.dx - _ballRadius,
                         top: ball.position.dy - _ballRadius,
-                        child: GestureDetector(
-                          onTap: () => _handleBallTap(ball),
-                          child: Container(
-                            width: _ballRadius * 2,
-                            height: _ballRadius * 2,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: ball.color,
-                              boxShadow: [BoxShadow(color: ball.color.withOpacity(0.5), blurRadius: 15)],
-                              border: Border.all(color: Colors.white.withOpacity(0.8), width: 3)
-                            ),
-                            alignment: Alignment.center,
-                            child: Padding(
-                              padding: const EdgeInsets.all(10.0),
-                              child: FittedBox(
-                                fit: BoxFit.scaleDown,
-                                child: Text(ball.wordPair['question']!, textAlign: TextAlign.center, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: Colors.black)),
+                        child: AnimatedScale(
+                          scale: isBeingRemoved ? 0.0 : 1.0,
+                          duration: const Duration(milliseconds: 300),
+                          curve: Curves.easeInBack,
+                          child: GestureDetector(
+                            onTap: () => _handleBallTap(ball),
+                            child: Container(
+                              width: _ballRadius * 2,
+                              height: _ballRadius * 2,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                gradient: RadialGradient(
+                                  colors: [
+                                    ball.color.withOpacity(0.95),
+                                    ball.color,
+                                    ball.color.withOpacity(0.7),
+                                  ],
+                                  stops: const [0.0, 0.5, 1.0],
+                                  center: const Alignment(-0.3, -0.3),
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: ball.color.withOpacity(0.7),
+                                    blurRadius: r.scale(25),
+                                    spreadRadius: r.scale(5),
+                                  ),
+                                  BoxShadow(
+                                    color: Colors.black.withOpacity(0.3),
+                                    blurRadius: r.scale(10),
+                                    offset: Offset(0, r.scale(4)),
+                                  ),
+                                ],
+                                border: Border.all(
+                                  color: Colors.white.withOpacity(0.8),
+                                  width: r.scale(3),
+                                ),
+                              ),
+                              alignment: Alignment.center,
+                              child: Padding(
+                                padding: EdgeInsets.all(r.spacing(8)),
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  child: SizedBox(
+                                    width: _ballRadius * 1.6,
+                                    child: Text(
+                                      ball.wordPair['question']!,
+                                      textAlign: TextAlign.center,
+                                      maxLines: 3,
+                                      overflow: TextOverflow.visible,
+                                      style: TextStyle(
+                                        fontSize: r.fontSize(16),
+                                        fontWeight: FontWeight.w900,
+                                        color: Colors.white,
+                                        height: 1.1,
+                                        shadows: [
+                                          Shadow(
+                                            color: Colors.black87,
+                                            blurRadius: r.scale(6),
+                                            offset: Offset(0, r.scale(2)),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
                           ),
                         ),
                       );
-                    }).toList(),
+                    }),
 
-                    // TOP BAR
-                    Positioned(
-                      top: 0, left: 0, right: 0,
-                      child: Container(
-                        height: 80, 
-                        padding: const EdgeInsets.symmetric(horizontal: 30),
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(colors: [Colors.black.withOpacity(0.9), Colors.transparent], begin: Alignment.topCenter, end: Alignment.bottomCenter)
-                        ),
-                        child: Stack(
-                          children: [
-                            Align(alignment: Alignment.centerLeft, child: Text("Left: ${_vocabulary.length}", style: const TextStyle(color: AppColors.primary, fontSize: 24, fontWeight: FontWeight.bold))),
-                            
-                            Align(
-                              alignment: Alignment.center,
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 12),
-                                decoration: BoxDecoration(color: AppColors.cardColor, borderRadius: BorderRadius.circular(30), border: Border.all(color: AppColors.primary, width: 2)),
-                                child: Text(_targetWordPair != null ? _targetWordPair!['answer']!.toUpperCase() : "...", style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: Colors.white)),
-                              ),
-                            ),
-                            
-                            Align(alignment: Alignment.centerRight, child: IconButton(onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.close, color: Colors.white, size: 36))),
-                          ],
-                        ),
-                      ),
-                    ),
-
-                    // FEEDBACK
-                    IgnorePointer(
-                      ignoring: true,
-                      child: Center(
-                        child: AnimatedOpacity(
-                          duration: const Duration(milliseconds: 200),
-                          opacity: _showFeedback ? 1.0 : 0.0,
+                    // Render particles with enhanced glow
+                    ..._particles.map((particle) {
+                      double particleSize = r.scale(8) + (particle.life * r.scale(4));
+                      return Positioned(
+                        left: particle.position.dx - particleSize / 2,
+                        top: particle.position.dy - particleSize / 2,
+                        child: Opacity(
+                          opacity: (particle.life * 0.8).clamp(0.0, 1.0),
                           child: Container(
-                            padding: const EdgeInsets.all(30),
-                            decoration: BoxDecoration(color: Colors.black.withOpacity(0.9), borderRadius: BorderRadius.circular(20), border: Border.all(color: AppColors.error, width: 3)),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(Icons.cancel, color: AppColors.error, size: 80),
-                                const SizedBox(height: 15),
-                                Text(_feedbackText, textAlign: TextAlign.center, style: const TextStyle(color: AppColors.error, fontSize: 32, fontWeight: FontWeight.bold)),
+                            width: particleSize,
+                            height: particleSize,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: particle.color,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: particle.color.withOpacity(0.9),
+                                  blurRadius: r.scale(12),
+                                  spreadRadius: r.scale(2),
+                                )
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    }),
+
+                    // TOP MIDDLE - Target word
+                    Positioned(
+                      top: r.spacing(15),
+                      left: 0,
+                      right: 0,
+                      child: Center(
+                        child: Container(
+                          padding: EdgeInsets.symmetric(horizontal: r.spacing(24), vertical: r.spacing(12)),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.8),
+                            borderRadius: BorderRadius.circular(r.radius(20)),
+                            border: Border.all(color: Colors.white.withOpacity(0.4), width: 2),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.white.withOpacity(0.2),
+                                blurRadius: r.scale(20),
+                                spreadRadius: r.scale(3),
+                              ),
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.5),
+                                blurRadius: r.scale(15),
+                                offset: Offset(0, r.scale(3)),
+                              )
+                            ],
+                          ),
+                          child: Text(
+                            _targetWordPair != null ? _targetWordPair!['answer']!.toUpperCase() : "...",
+                            style: TextStyle(
+                              fontSize: r.fontSize(22),
+                              fontWeight: FontWeight.w900,
+                              color: Colors.white,
+                              letterSpacing: 1.5,
+                              shadows: [
+                                Shadow(
+                                  color: Colors.white24,
+                                  blurRadius: r.scale(8),
+                                )
                               ],
                             ),
                           ),
                         ),
                       ),
-                    )
+                    ),
+
+                    // TOP BAR
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: SafeArea(
+                        child: Container(
+                          padding: EdgeInsets.symmetric(horizontal: r.spacing(20), vertical: r.spacing(8)),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [Colors.black.withOpacity(0.9), Colors.transparent],
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              // Left side - Words remaining with progress
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  Text(
+                                    "${_wordQueue.length}",
+                                    style: TextStyle(
+                                      color: AppColors.primary,
+                                      fontSize: r.fontSize(28),
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                  SizedBox(width: r.spacing(4)),
+                                  Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        S.left,
+                                        style: TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: r.fontSize(10),
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      Text(
+                                        "/ $_totalWordsInLesson",
+                                        style: TextStyle(
+                                          color: Colors.white.withOpacity(0.4),
+                                          fontSize: r.fontSize(12),
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+
+                              const Spacer(),
+
+                              // Right side - Score and combo
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  ScaleTransition(
+                                    scale: _scoreScale,
+                                    child: Text(
+                                      "$_score",
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: r.fontSize(28),
+                                        fontWeight: FontWeight.w900,
+                                        shadows: [
+                                          Shadow(
+                                            color: Colors.white38,
+                                            blurRadius: r.scale(10),
+                                          )
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                  SizedBox(width: r.spacing(4)),
+                                  Text(
+                                    S.pts,
+                                    style: TextStyle(
+                                      color: Colors.white54,
+                                      fontSize: r.fontSize(10),
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  if (_combo > 1)
+                                    Container(
+                                      margin: EdgeInsets.only(left: r.spacing(8)),
+                                      padding: EdgeInsets.symmetric(horizontal: r.spacing(6), vertical: r.spacing(3)),
+                                      decoration: BoxDecoration(
+                                        gradient: const LinearGradient(
+                                          colors: [AppColors.primary, AppColors.accent],
+                                        ),
+                                        borderRadius: BorderRadius.circular(r.radius(8)),
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color: AppColors.primary.withOpacity(0.5),
+                                            blurRadius: r.scale(8),
+                                            spreadRadius: r.scale(1),
+                                          )
+                                        ],
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            Icons.bolt_rounded,
+                                            color: Colors.white,
+                                            size: r.iconSize(14),
+                                          ),
+                                          Text(
+                                            "x$_combo",
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontSize: r.fontSize(12),
+                                              fontWeight: FontWeight.w900,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  SizedBox(width: r.spacing(8)),
+                                ],
+                              ),
+
+                              // Close button
+                              IconButton(
+                                onPressed: () => Navigator.of(context).pop(),
+                                icon: Icon(Icons.close_rounded, color: Colors.white, size: r.iconSize(28)),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    // FEEDBACK - Wrong answer
+                    if (_showFeedback)
+                      IgnorePointer(
+                        ignoring: true,
+                        child: Center(
+                          child: ScaleTransition(
+                            scale: _feedbackScale,
+                            child: Container(
+                              padding: EdgeInsets.all(r.spacing(40)),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.95),
+                                borderRadius: BorderRadius.circular(r.radius(24)),
+                                border: Border.all(color: AppColors.error, width: r.scale(4)),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: AppColors.error.withOpacity(0.5),
+                                    blurRadius: r.scale(30),
+                                    spreadRadius: r.scale(10),
+                                  )
+                                ],
+                              ),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Container(
+                                    padding: EdgeInsets.all(r.spacing(16)),
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: AppColors.error.withOpacity(0.2),
+                                      border: Border.all(color: AppColors.error, width: r.scale(3)),
+                                    ),
+                                    child: Icon(
+                                      Icons.close_rounded,
+                                      color: AppColors.error,
+                                      size: r.iconSize(60),
+                                    ),
+                                  ),
+                                  SizedBox(height: r.spacing(20)),
+                                  Text(
+                                    _feedbackText,
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: AppColors.error,
+                                      fontSize: r.fontSize(36),
+                                      fontWeight: FontWeight.w900,
+                                      letterSpacing: 1.2,
+                                      height: 1.3,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+
+                    // CYCLE COMPLETE - Celebration message
+                    if (_showCycleComplete)
+                      IgnorePointer(
+                        ignoring: true,
+                        child: Center(
+                          child: Container(
+                            padding: EdgeInsets.symmetric(horizontal: r.spacing(50), vertical: r.spacing(30)),
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                colors: [
+                                  AppColors.primary.withOpacity(0.95),
+                                  AppColors.accent.withOpacity(0.95),
+                                ],
+                              ),
+                              borderRadius: BorderRadius.circular(r.radius(24)),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: AppColors.primary.withOpacity(0.6),
+                                  blurRadius: r.scale(40),
+                                  spreadRadius: r.scale(15),
+                                )
+                              ],
+                            ),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.emoji_events_rounded,
+                                  color: Colors.white,
+                                  size: r.iconSize(70),
+                                ),
+                                SizedBox(height: r.spacing(16)),
+                                Text(
+                                  S.cycleComplete,
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: r.fontSize(32),
+                                    fontWeight: FontWeight.w900,
+                                    letterSpacing: 2,
+                                  ),
+                                ),
+                                SizedBox(height: r.spacing(8)),
+                                Text(
+                                  S.allWordsReviewed,
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: r.fontSize(18),
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               );
@@ -448,6 +882,26 @@ class GameBall {
   Offset position;
   Offset velocity;
   final Color color;
-  final Map<String, String> wordPair; 
+  final Map<String, String> wordPair;
   GameBall({required this.id, required this.position, required this.velocity, required this.color, required this.wordPair});
+}
+
+class ParticleEffect {
+  Offset position;
+  Offset velocity;
+  Color color;
+  double life;
+
+  ParticleEffect({
+    required this.position,
+    required this.velocity,
+    required this.color,
+    required this.life,
+  });
+
+  void update() {
+    position += velocity;
+    velocity *= 0.96; // Friction - slower decay for more visible particles
+    life -= 0.015; // Slower fade for longer-lasting effect
+  }
 }

@@ -1,33 +1,38 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'theme.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'services/app_strings.dart';
 
 // --- YOUR PAGE IMPORTS ---
 // (Ensure these paths match exactly where your files are)
 import 'package:my_first_flutter_app/pages/bubble.dart';
 import 'package:my_first_flutter_app/pages/statistics.dart';
 import 'package:my_first_flutter_app/pages/gameMode.dart';
-import 'package:my_first_flutter_app/pages/MainScreen.dart'; 
+import 'package:my_first_flutter_app/pages/MainScreen.dart';
 import 'package:my_first_flutter_app/pages/LoginPage.dart';
 import 'package:my_first_flutter_app/pages/RegisterPage.dart';
 // Note: Check if notification_service.dart is in 'lib/' or 'lib/pages/'
-import 'package:my_first_flutter_app/pages/notification_service.dart'; 
-import 'local_db.dart'; 
+import 'package:my_first_flutter_app/pages/notification_service.dart';
+import 'local_db.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
+  // Load environment variables from .env file
+  await dotenv.load(fileName: ".env");
+
   await Supabase.initialize(
-    // 1. PASTE YOUR PROJECT URL HERE
-    url: 'https://uhvwszwiasuemevjwslk.supabase.co', 
-    
-    // 2. YOUR ANKEY
-    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVodndzendpYXN1ZW1ldmp3c2xrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc0NTgxMzYsImV4cCI6MjA4MzAzNDEzNn0.CjStw779lQWRLWzu1euFN45kVqf4xRAFcEyld9mgYQY',
+    // Credentials loaded from .env file (not exposed in source code)
+    url: dotenv.env['SUPABASE_URL']!,
+    anonKey: dotenv.env['SUPABASE_ANON_KEY']!,
   );
 
   // ✅ INIT NOTIFICATIONS
   await NotificationService().init();
+  // ✅ LOAD SAVED LANGUAGE
+  await S.load();
   LocalDB.instance.syncEverything();
   runApp(const ProviderScope(child: MyApp()));
 }
@@ -47,6 +52,10 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     super.initState();
     // 1. Start watching the app state
     WidgetsBinding.instance.addObserver(this);
+    // 2. Register locale change callback to rebuild entire app
+    S.setOnLocaleChanged(() {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
@@ -69,13 +78,14 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      key: ValueKey(S.locale),
       debugShowCheckedModeBanner: false,
       title: 'Language App',
-      
+
       // APPLY THE THEME HERE
-      theme: appTheme, 
-      
-      home: const AuthGate(), 
+      theme: appTheme,
+
+      home: const AuthGate(),
       routes: {
         '/login': (context) => const LoginPage(),
         '/register': (context) => const RegisterPage(),

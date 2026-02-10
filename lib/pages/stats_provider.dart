@@ -59,37 +59,90 @@ Stream<void> _notifierToStream(ValueNotifier notifier) async* {
   }
 }
 
-// 3. THE MAIN PROVIDER
+// 3. FILTER STATE (book, teacher, or all)
+enum StatsFilter { book, teacher, all }
+final statsFilterProvider = StateProvider<StatsFilter>((ref) => StatsFilter.book);
+
+// 4. THE MAIN PROVIDER (with filtering support)
 final statsProvider = FutureProvider<UserStats>((ref) async {
   ref.watch(dbUpdateTrigger);
+  final filter = ref.watch(statsFilterProvider);
 
   final db = await LocalDB.instance.database;
   final now = DateTime.now();
   final todayMidnight = DateTime(now.year, now.month, now.day);
   final userId = Supabase.instance.client.auth.currentUser?.id;
 
+  // Get current book and teacher IDs
+  final currentBookId = await LocalDB.instance.getCurrentBookId();
+  final currentTeacherId = await LocalDB.instance.getCurrentTeacherId();
+
+  // Build word filter based on selected filter mode
+  String wordFilter = '';
+  List<dynamic> wordFilterArgs = [];
+
+  if (filter == StatsFilter.book && currentBookId != null) {
+    // Filter by current book only
+    wordFilter = '''
+      AND word_id IN (
+        SELECT w.id FROM words w
+        JOIN lesson_words lw ON lw.word_id = w.id
+        JOIN lessons l ON lw.lesson_id = l.id
+        WHERE l.book_id = ?
+      )
+    ''';
+    wordFilterArgs.add(currentBookId);
+  } else if (filter == StatsFilter.teacher && currentTeacherId != null) {
+    // Filter by all books from current teacher
+    wordFilter = '''
+      AND word_id IN (
+        SELECT w.id FROM words w
+        JOIN lesson_words lw ON lw.word_id = w.id
+        JOIN lessons l ON lw.lesson_id = l.id
+        JOIN books b ON l.book_id = b.id
+        WHERE b.teacher_id = ?
+      )
+    ''';
+    wordFilterArgs.add(currentTeacherId);
+  }
+  // If filter == all, no word filter (show everything)
+
   // --- A. COUNTS & FORECAST ---
-  final allWords = await db.query('user_progress');
-  final totalWordsRes = await db.rawQuery('SELECT COUNT(*) FROM words');
-  int totalWords = Sqflite.firstIntValue(totalWordsRes) ?? 0;
+  final allWords = await db.rawQuery('''
+    SELECT * FROM user_progress
+    WHERE user_id = ? $wordFilter
+  ''', [userId, ...wordFilterArgs]);
+
+  // Count total words in scope
+  int totalWords;
+  if (filter == StatsFilter.book && currentBookId != null) {
+    final res = await db.rawQuery('''
+      SELECT COUNT(DISTINCT w.id) as count FROM words w
+      JOIN lesson_words lw ON lw.word_id = w.id
+      JOIN lessons l ON lw.lesson_id = l.id
+      WHERE l.book_id = ?
+    ''', [currentBookId]);
+    totalWords = Sqflite.firstIntValue(res) ?? 0;
+  } else if (filter == StatsFilter.teacher && currentTeacherId != null) {
+    final res = await db.rawQuery('''
+      SELECT COUNT(DISTINCT w.id) as count FROM words w
+      JOIN lesson_words lw ON lw.word_id = w.id
+      JOIN lessons l ON lw.lesson_id = l.id
+      JOIN books b ON l.book_id = b.id
+      WHERE b.teacher_id = ?
+    ''', [currentTeacherId]);
+    totalWords = Sqflite.firstIntValue(res) ?? 0;
+  } else {
+    final res = await db.rawQuery('SELECT COUNT(*) as count FROM words');
+    totalWords = Sqflite.firstIntValue(res) ?? 0;
+  }
 
   int lrn = 0, lrd = 0;
   int fresh = 0, fading = 0, dormant = 0;
   List<int> forecast = List.filled(7, 0);
-  
-  // 🔥 HEATMAP PREP: Start with an empty map
-  Map<DateTime, int> heat = {};
 
   for (var row in allWords) {
     String status = row['status'] as String;
-    
-    // 1. POPULATE HEATMAP FROM SAVED PROGRESS
-    // This captures the LAST time you touched a word.
-    if (row['last_reviewed'] != null) {
-      DateTime lr = DateTime.parse(row['last_reviewed'] as String).toLocal();
-      DateTime cleanLr = DateTime(lr.year, lr.month, lr.day);
-      heat[cleanLr] = (heat[cleanLr] ?? 0) + 1;
-    }
 
     if (status == 'learning') lrn++;
     else if (status == 'consolidating' || status == 'learned') {
@@ -108,23 +161,30 @@ final statsProvider = FutureProvider<UserStats>((ref) async {
       DateTime dueMidnight = DateTime(due.year, due.month, due.day);
       int diffDays = dueMidnight.difference(todayMidnight).inDays;
 
-      if (diffDays < 0) forecast[0]++;       
-      else if (diffDays < 7) forecast[diffDays]++; 
+      if (diffDays < 0) forecast[0]++;
+      else if (diffDays < 7) forecast[diffDays]++;
     }
   }
 
   int n = totalWords - (lrn + lrd);
   if (n < 0) n = 0;
 
-  // 2. ADD LOCAL LOGS (For today's high-detail activity)
-  final logs = await db.query('attempt_logs');
-  for (var log in logs) {
-    DateTime dt = DateTime.parse(log['attempted_at'] as String).toLocal();
-    DateTime cleanDate = DateTime(dt.year, dt.month, dt.day);
-    heat[cleanDate] = (heat[cleanDate] ?? 0) + 1;
+  // 🔥 NEW: Use aggregated daily_stats for heatmap (much faster!)
+  final heatmapData = await LocalDB.instance.getDailyActivityHeatmap(days: 365);
+
+  // Convert String dates to DateTime keys for the heatmap widget
+  Map<DateTime, int> heat = {};
+  for (var entry in heatmapData.entries) {
+    try {
+      final date = DateTime.parse(entry.key);
+      final cleanDate = DateTime(date.year, date.month, date.day);
+      heat[cleanDate] = entry.value;
+    } catch (e) {
+      debugPrint("⚠️ Invalid date in heatmap: ${entry.key}");
+    }
   }
 
-  // --- C. CLOUD HISTORY BACKFILL ---
+  // --- C. HISTORICAL STATS (Using new helper function) ---
   List<FlSpot> tempLearned = [];
   List<FlSpot> tempLearning = [];
   List<String> tempDates = [];
@@ -132,41 +192,30 @@ final statsProvider = FutureProvider<UserStats>((ref) async {
 
   if (userId != null) {
     try {
-      final response = await Supabase.instance.client
-          .from('daily_stats')
-          .select('date, learned_count, reviewing_count') 
-          .eq('user_id', userId)
-          .order('date', ascending: true)
-          .limit(365); // 🔥 UPDATE: Fetch full year (was 60)
+      // 🔥 NEW: Use optimized helper function
+      final historicalStats = await LocalDB.instance.getHistoricalStats(days: 90);
 
       int index = 0;
-      for (var row in response) {
-        double valLearned = (row['learned_count'] as num).toDouble();
-        double valLearning = (row['reviewing_count'] as num).toDouble();
-        
+      for (var stat in historicalStats) {
+        double valLearned = (stat['learned'] as num?)?.toDouble() ?? 0;
+        double valLearning = (stat['reviewing'] as num?)?.toDouble() ?? 0;
+
         tempLearned.add(FlSpot(index.toDouble(), valLearned));
         tempLearning.add(FlSpot(index.toDouble(), valLearning));
-        
-        DateTime dateObj = DateTime.parse(row['date']).toLocal();
+
+        DateTime dateObj = DateTime.parse(stat['date'] as String).toLocal();
         tempDates.add(DateFormat('MMM d').format(dateObj));
 
         if (valLearned > calcMax) calcMax = valLearned;
         if (valLearning > calcMax) calcMax = valLearning;
-        
-        // --- 🔥 FILL GAPS IN HEATMAP (THE FIX) 🔥 ---
-        DateTime cleanDate = DateTime(dateObj.year, dateObj.month, dateObj.day);
-        
-        // Check if we have ANY local data for this date.
-        int currentScore = heat[cleanDate] ?? 0;
 
-        // If local score is 0, but Cloud says we existed that day -> Force a score.
-        // We give it '5' so it shows up as a medium-colored block.
-        if (currentScore == 0) {
-           heat[cleanDate] = 5; 
-        } 
-        // If we already have local data (e.g. score 50), we keep the local data 
-        // because it's more accurate.
-        
+        // Fill gaps in heatmap from daily_stats
+        DateTime cleanDate = DateTime(dateObj.year, dateObj.month, dateObj.day);
+        if (!heat.containsKey(cleanDate) && (stat['total'] as num) > 0) {
+          // If not already in heatmap but we have activity, add it
+          heat[cleanDate] = (stat['total'] as num).toInt();
+        }
+
         index++;
       }
     } catch (e) {

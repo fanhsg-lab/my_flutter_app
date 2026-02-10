@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter analyze:*)",
+      "Bash(del \"c:\\\\Users\\\\fanisgn\\\\my_first_flutter_app\\\\lib\\\\services\\\\onboarding_service.dart\")",
+      "Bash(flutter pub get:*)"
+    ]
+  }
+}

@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../theme.dart'; 
-import '../local_db.dart'; 
-import 'notification_service.dart'; // Import the service
+import '../theme.dart';
+import '../local_db.dart';
+import '../responsive.dart';
+import '../services/app_strings.dart';
+import 'notification_service.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -13,55 +15,84 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
-  String _userEmail = "Loading...";
+  String _userEmail = "";
+  String _displayName = "";
+  bool _notificationsEnabled = true;
 
   @override
   void initState() {
     super.initState();
-    _getUserData();
+    _loadProfile();
   }
 
-  void _getUserData() {
+  Future<void> _loadProfile() async {
     final user = Supabase.instance.client.auth.currentUser;
-    setState(() {
-      _userEmail = user?.email ?? "No Email";
-    });
-  }
-
-  Future<void> _fixMyApp() async {
-    final db = await LocalDB.instance.database;
-    debugPrint("💥 NUKING LOCAL DATA...");
-    await db.delete('words');
-    await db.delete('lessons');
-    await db.delete('user_progress'); 
-    debugPrint("🔄 Starting Fresh Sync...");
-    await LocalDB.instance.syncEverything();
-    debugPrint("✅ Done!");
-    
+    final name = await LocalDB.instance.getDisplayName();
+    final notifEnabled = await NotificationService().areNotificationsEnabled();
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("App Repaired! Please restart the app completely.")),
-      );
+      setState(() {
+        _userEmail = user?.email ?? S.noEmail;
+        _displayName = name ?? '';
+        _notificationsEnabled = notifEnabled;
+      });
     }
   }
 
- Future<void> _signOut() async {
-    try {
-      // 🔥 STEP 1: Sign out of Google to clear the cached account
-      // This ensures the "Choose Account" popup appears next time.
-      await GoogleSignIn().signOut();
+  Future<void> _editName() async {
+    final controller = TextEditingController(text: _displayName);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.cardColor,
+        title: Text(S.displayName, style: const TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: S.enterName,
+            hintStyle: TextStyle(color: Colors.grey.shade600),
+            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.grey.shade700)),
+            focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: AppColors.primary)),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(S.cancel, style: const TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: Text(S.save, style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
 
-      // 🔥 STEP 2: Sign out of Supabase
+    if (result != null) {
+      await LocalDB.instance.setDisplayName(result);
+      if (mounted) setState(() => _displayName = result);
+    }
+  }
+
+  void _openFeedback() {
+    showDialog(
+      context: context,
+      builder: (_) => const _FeedbackDialog(),
+    );
+  }
+
+  Future<void> _signOut() async {
+    try {
+      await GoogleSignIn().signOut();
       await Supabase.instance.client.auth.signOut();
-      
       if (mounted) {
-        // Remove all screens and go back to Login
         Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Error signing out: $e")),
+          SnackBar(content: Text("${S.errorSigningOut} $e")),
         );
       }
     }
@@ -69,123 +100,137 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final r = Responsive(context);
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        title: const Text("Profile", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-        centerTitle: true,
-        leading: Navigator.canPop(context) 
-            ? IconButton(icon: const Icon(Icons.arrow_back, color: Colors.white), onPressed: () => Navigator.pop(context))
-            : null,
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          children: [
-            const SizedBox(height: 20),
-            
-            // 1. AVATAR
+      body: SafeArea(
+        child: LayoutBuilder(
+        builder: (context, constraints) {
+          return SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: constraints.maxHeight),
+              child: IntrinsicHeight(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    // TITLE
+                    Padding(
+                      padding: EdgeInsets.only(top: r.spacing(16), bottom: r.spacing(12)),
+                      child: Center(
+                        child: Text(S.profileTitle, style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: r.fontSize(18), letterSpacing: 1.5)),
+                      ),
+                    ),
+
+            // ── HEADER: Avatar + Name + Email ──
             Container(
-              padding: const EdgeInsets.all(4),
+              padding: const EdgeInsets.all(3),
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 border: Border.all(color: AppColors.primary, width: 2),
               ),
               child: const CircleAvatar(
-                radius: 50,
+                radius: 38,
                 backgroundColor: AppColors.cardColor,
-                child: Icon(Icons.person, size: 50, color: Colors.white),
+                child: Icon(Icons.person, size: 38, color: Colors.white),
               ),
             ),
-            
-            const SizedBox(height: 20),
-            
-            // 2. USER EMAIL
-            Text(
-              _userEmail,
-              style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const Text(
-              "Beginner Student",
-              style: TextStyle(color: Colors.grey, fontSize: 14),
-            ),
 
-            const SizedBox(height: 40),
+            const SizedBox(height: 10),
 
-            // 3. MENU OPTIONS
-            _buildProfileOption(Icons.settings, "Settings", () {}),
-            _buildProfileOption(Icons.notifications, "Notifications", () {}),
-            _buildProfileOption(Icons.language, "Language", () {}),
-
-            const SizedBox(height: 20),
-
-            // 🔥 4. NOTIFICATION CHECKER WIDGET 🔥
-            FutureBuilder<bool>(
-              future: NotificationService().areNotificationsEnabled(),
-              builder: (context, snapshot) {
-                // If waiting or enabled, show nothing
-                if (!snapshot.hasData || snapshot.data == true) return const SizedBox.shrink();
-
-                // If disabled, show the Red Warning Box
-                return Container(
-                  padding: const EdgeInsets.all(12),
-                  margin: const EdgeInsets.only(bottom: 20),
-                  decoration: BoxDecoration(
-                    color: Colors.redAccent.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.redAccent),
+            // Display name (tappable to edit)
+            GestureDetector(
+              onTap: _editName,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _displayName.isEmpty ? S.student : _displayName,
+                    style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
                   ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.notifications_off, color: Colors.redAccent),
-                      const SizedBox(width: 12),
-                      const Expanded(
-                        child: Text(
-                          "Notifications are off! You might lose your streak.",
-                          style: TextStyle(color: Colors.white, fontSize: 12),
-                        ),
-                      ),
-                      TextButton(
-                        onPressed: () async {
-                          await NotificationService().openSettings();
-                          // Force rebuild to check status again after they come back
-                          setState(() {});
-                        },
-                        child: const Text("ENABLE"),
-                      )
-                    ],
-                  ),
-                );
-              },
+                  const SizedBox(width: 6),
+                  Icon(Icons.edit, color: Colors.grey.shade600, size: 14),
+                ],
+              ),
             ),
 
+            const SizedBox(height: 2),
 
-            // 5. REPAIR BUTTON
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.amber.shade900, 
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-                onPressed: _fixMyApp, 
-                icon: const Icon(Icons.build, color: Colors.white),
-                label: const Text(
-                  "REPAIR APP (Kill Duplicates)", 
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                ),
+            // Email
+            Text(_userEmail, style: const TextStyle(color: Colors.grey, fontSize: 13)),
+
+            // Student label
+            Container(
+              margin: const EdgeInsets.only(top: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+              decoration: BoxDecoration(
+                color: AppColors.primary.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text(
+                S.student,
+                style: const TextStyle(color: AppColors.primary, fontSize: 11, fontWeight: FontWeight.w600),
               ),
             ),
 
             const SizedBox(height: 20),
 
-            // 6. LOGOUT BUTTON
+            // ── ACCOUNT SECTION ──
+            _sectionHeader(S.account),
+            const SizedBox(height: 6),
+
+            // Language toggle
+            _buildLanguageOption(),
+
+            // Notifications toggle
+            Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              decoration: BoxDecoration(
+                color: AppColors.cardColor,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: ListTile(
+                dense: true,
+                leading: const Icon(Icons.notifications_outlined, color: AppColors.primary),
+                title: Text(S.notifications, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                trailing: Switch(
+                  value: _notificationsEnabled,
+                  activeColor: AppColors.primary,
+                  onChanged: (value) async {
+                    await NotificationService().openSettings();
+                    final enabled = await NotificationService().areNotificationsEnabled();
+                    if (mounted) setState(() => _notificationsEnabled = enabled);
+                  },
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 16),
+
+            // ── HELP CENTER SECTION ──
+            _sectionHeader(S.helpCenter),
+            const SizedBox(height: 6),
+
+            Container(
+              decoration: BoxDecoration(
+                color: AppColors.cardColor,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: ListTile(
+                leading: const Icon(Icons.feedback_outlined, color: AppColors.primary),
+                title: Text(S.contactDeveloper, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+                subtitle: Text(S.contactMessage, style: TextStyle(color: Colors.grey.shade500, fontSize: 11)),
+                trailing: const Icon(Icons.arrow_forward_ios, color: Colors.grey, size: 14),
+                onTap: _openFeedback,
+              ),
+            ),
+
+            const Spacer(),
+
+            // ── LOGOUT ──
             SizedBox(
               width: double.infinity,
-              height: 50,
+              height: 48,
               child: ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.red.shade900,
@@ -193,31 +238,154 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   elevation: 0,
                 ),
                 onPressed: _signOut,
-                child: const Text(
-                  "LOG OUT",
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                child: Text(
+                  S.logOut,
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
                 ),
               ),
             ),
-          ],
+
+            const SizedBox(height: 16),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+      ),
+    );
+  }
+
+  Widget _sectionHeader(String title) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Text(
+        title.toUpperCase(),
+        style: TextStyle(
+          color: Colors.grey.shade500,
+          fontSize: 12,
+          fontWeight: FontWeight.bold,
+          letterSpacing: 1.5,
         ),
       ),
     );
   }
 
-  Widget _buildProfileOption(IconData icon, String title, VoidCallback onTap) {
+  Widget _buildLanguageOption() {
+    final isGreek = S.locale == 'el';
     return Container(
-      margin: const EdgeInsets.only(bottom: 15),
+      margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
         color: AppColors.cardColor,
         borderRadius: BorderRadius.circular(12),
       ),
       child: ListTile(
-        leading: Icon(icon, color: AppColors.primary),
-        title: Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-        trailing: const Icon(Icons.arrow_forward_ios, color: Colors.grey, size: 16),
-        onTap: onTap,
+        dense: true,
+        leading: const Icon(Icons.language, color: AppColors.primary),
+        title: Text(S.language, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        trailing: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: AppColors.primary.withOpacity(0.2),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: AppColors.primary, width: 1.5),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                isGreek ? '🇬🇷 Ελ' : '🇬🇧 En',
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+              const SizedBox(width: 4),
+              const Icon(Icons.swap_horiz, color: AppColors.primary, size: 18),
+            ],
+          ),
+        ),
+        onTap: () async {
+          await S.setLocale(isGreek ? 'en' : 'el');
+        },
       ),
+    );
+  }
+}
+
+class _FeedbackDialog extends StatefulWidget {
+  const _FeedbackDialog();
+
+  @override
+  State<_FeedbackDialog> createState() => _FeedbackDialogState();
+}
+
+class _FeedbackDialogState extends State<_FeedbackDialog> {
+  final _controller = TextEditingController();
+  bool _sending = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final msg = _controller.text.trim();
+    if (msg.isEmpty) return;
+    setState(() => _sending = true);
+    try {
+      await Supabase.instance.client.from('feedback').insert({
+        'user_id': Supabase.instance.client.auth.currentUser?.id,
+        'message': msg,
+      });
+      if (!mounted) return;
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(S.feedbackSent)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _sending = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Failed to send feedback')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: AppColors.cardColor,
+      title: Text(S.contactDeveloper, style: const TextStyle(color: Colors.white)),
+      content: TextField(
+        controller: _controller,
+        maxLines: 5,
+        style: const TextStyle(color: Colors.white),
+        decoration: InputDecoration(
+          hintText: S.feedbackHint,
+          hintStyle: TextStyle(color: Colors.grey.shade600),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: BorderSide(color: Colors.grey.shade700),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: const BorderSide(color: AppColors.primary),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _sending ? null : () => Navigator.pop(context),
+          child: Text(S.cancel, style: const TextStyle(color: Colors.grey)),
+        ),
+        TextButton(
+          onPressed: _sending ? null : _submit,
+          child: _sending
+              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+              : Text(S.send, style: const TextStyle(color: AppColors.primary)),
+        ),
+      ],
     );
   }
 }

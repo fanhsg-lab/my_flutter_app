@@ -2,18 +2,25 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../local_db.dart';
 import '../theme.dart';
+import '../responsive.dart';
+import '../services/app_strings.dart';
 import 'package:my_first_flutter_app/pages/notification_service.dart'; 
 
 class SurvivalPage extends StatefulWidget {
   final int lessonId;
   final bool isReversed;
+  final bool isPracticeMode; // true = all words, false = expired words only
+  final String sourceLanguage;
 
   const SurvivalPage({
     super.key,
     required this.lessonId,
     required this.isReversed,
+    this.isPracticeMode = false, // Default to Review Mode
+    this.sourceLanguage = 'es',
   });
 
   @override
@@ -23,7 +30,7 @@ class SurvivalPage extends StatefulWidget {
 class _SurvivalPageState extends State<SurvivalPage> {
   // State
   bool _isLoading = true;
-  String _debugStatus = "Initializing...";
+  String _debugStatus = "";
   
   List<GameItem> _cleanQueue = []; 
   int _currentIndex = 0;
@@ -73,13 +80,57 @@ class _SurvivalPageState extends State<SurvivalPage> {
   }
 
   Future<void> _loadAndProcessData() async {
-    setState(() => _debugStatus = "Loading...");
+    setState(() => _debugStatus = S.loading);
     try {
       final db = await LocalDB.instance.database;
-      final rawData = await db.query('words', where: 'lesson_id = ?', whereArgs: [widget.lessonId]);
-      
+      final supabase = Supabase.instance.client;
+      final userId = supabase.auth.currentUser?.id;
+
+      if (userId == null) {
+        _showError(S.pleaseLogIn);
+        return;
+      }
+
+      // Load words based on mode
+      final List<Map<String, dynamic>> rawData;
+      if (widget.isPracticeMode) {
+        // Practice Mode: Load ALL words from lesson
+        rawData = await db.rawQuery('''
+          SELECT w.* FROM lesson_words lw
+          JOIN words w ON w.id = lw.word_id
+          WHERE lw.lesson_id = ?
+          ORDER BY w.id ASC
+        ''', [widget.lessonId]);
+      } else {
+        // Review Mode: Load ONLY expired words (words due for review)
+        // Load words with progress and filter by datetime in Dart for timezone accuracy
+        final allWords = await db.rawQuery('''
+          SELECT w.id, w.lesson_id, w.es, w.en, up.next_due_at
+          FROM lesson_words lw
+          JOIN words w ON w.id = lw.word_id
+          INNER JOIN user_progress up ON w.id = up.word_id AND up.user_id = ?
+          WHERE lw.lesson_id = ?
+            AND up.next_due_at IS NOT NULL
+        ''', [userId, widget.lessonId]);
+
+        // Filter words where next_due_at has passed (including time)
+        final now = DateTime.now().toUtc();
+        rawData = allWords.where((word) {
+          try {
+            final nextDueStr = word['next_due_at'] as String?;
+            if (nextDueStr == null) return false;
+            final dueDate = DateTime.parse(nextDueStr).toUtc();
+            return dueDate.isBefore(now) || dueDate.isAtSameMomentAs(now);
+          } catch (e) {
+            return false;
+          }
+        }).toList();
+      }
+
       if (rawData.isEmpty) {
-        _showError("Database empty for this lesson.");
+        _showError(widget.isPracticeMode
+          ? S.noWordsInLesson
+          : S.noWordsDueReview);
         return;
       }
 
@@ -90,7 +141,7 @@ class _SurvivalPageState extends State<SurvivalPage> {
       }
 
       if (validItems.isEmpty) {
-        _showError("No valid words found.");
+        _showError(S.noValidWords);
         return;
       }
 
@@ -107,7 +158,7 @@ class _SurvivalPageState extends State<SurvivalPage> {
         });
       }
     } catch (e) {
-      _showError("Error: $e");
+      _showError("${S.error}: $e");
     }
   }
 
@@ -117,9 +168,17 @@ class _SurvivalPageState extends State<SurvivalPage> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text("Error"),
+        title: Text(S.error),
         content: Text(msg),
-        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("OK"))],
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context); // Close dialog
+              Navigator.pop(context); // Return to main screen
+            },
+            child: Text(S.ok)
+          )
+        ],
       ),
     );
   }
@@ -127,28 +186,39 @@ class _SurvivalPageState extends State<SurvivalPage> {
   // 🛠️ SANITIZER
   GameItem? _sanitizeItem(Map<String, dynamic> row) {
     try {
-      String rawTarget = (row['es'] as String? ?? ""); 
+      String rawTarget = (row['es'] as String? ?? "");
       String rawPrompt = (row['en'] as String? ?? "");
       if (rawTarget.isEmpty) return null;
 
       String cleanBase = rawTarget.toUpperCase();
-      cleanBase = cleanBase.replaceAll("EL/LA", "").replaceAll("UN/UNA", "");
-      cleanBase = cleanBase.split(',')[0].split('/')[0].split('(')[0];
 
-      final articleRegex = RegExp(r'^(EL|LA|LOS|LAS|UN|UNA)\s+', caseSensitive: false);
-      cleanBase = cleanBase.replaceAll(articleRegex, '').trim();
-      cleanBase = cleanBase.replaceAll(RegExp(r'[.!?¡¿]'), '');
+      if (widget.sourceLanguage == 'es') {
+        // Spanish-specific: remove articles and punctuation
+        cleanBase = cleanBase.replaceAll("EL/LA", "").replaceAll("UN/UNA", "");
+        cleanBase = cleanBase.split(',')[0].split('/')[0].split('(')[0];
+        final articleRegex = RegExp(r'^(EL|LA|LOS|LAS|UN|UNA)\s+', caseSensitive: false);
+        cleanBase = cleanBase.replaceAll(articleRegex, '').trim();
+        cleanBase = cleanBase.replaceAll(RegExp(r'[.!?¡¿]'), '');
+      } else {
+        // English/other: remove articles and basic punctuation
+        cleanBase = cleanBase.split(',')[0].split('(')[0];
+        final articleRegex = RegExp(r'^(THE|A|AN)\s+', caseSensitive: false);
+        cleanBase = cleanBase.replaceAll(articleRegex, '').trim();
+        cleanBase = cleanBase.replaceAll(RegExp(r'[.!?]'), '');
+      }
 
       if (cleanBase.isEmpty) return null;
 
-      String audioVersion = cleanBase; 
-      String gameVersion = _removeSpanishAccents(cleanBase); 
+      String audioVersion = cleanBase;
+      String gameVersion = widget.sourceLanguage == 'es'
+          ? _removeSpanishAccents(cleanBase)
+          : cleanBase;
       gameVersion = gameVersion.replaceAll(RegExp(r'\s+'), ' ');
 
       if (gameVersion.isNotEmpty) {
         return GameItem(
-          targetForTyping: gameVersion, 
-          targetForAudio: audioVersion, 
+          targetForTyping: gameVersion,
+          targetForAudio: audioVersion,
           prompt: rawPrompt
         );
       }
@@ -176,7 +246,7 @@ class _SurvivalPageState extends State<SurvivalPage> {
     }
     final item = _cleanQueue[_currentIndex];
     
-    _flutterTts.setLanguage("es-ES");
+    _flutterTts.setLanguage(widget.sourceLanguage == 'en' ? "en-US" : "es-ES");
 
     setState(() {
       _targetWord = item.targetForTyping;
@@ -209,12 +279,13 @@ class _SurvivalPageState extends State<SurvivalPage> {
     });
   }
 
-  // 🔥 CORE LOGIC: BLOCK WRONG INPUT
+  // 🔥 CORE LOGIC: BLOCK WRONG INPUT + SPACE DETECTION
   void _handleInput(String value) {
     if (_slotColors != null) return; // Locked on win/loss animation
 
-    String cleanValue = _removeSpanishAccents(value.toUpperCase());
-    
+    String cleanValue = value.toUpperCase();
+    if (widget.sourceLanguage == 'es') cleanValue = _removeSpanishAccents(cleanValue);
+
     // 1. If Backspace (value is shorter), just allow it
     if (cleanValue.length < _currentInput.length) {
       setState(() => _currentInput = cleanValue);
@@ -230,14 +301,19 @@ class _SurvivalPageState extends State<SurvivalPage> {
       // Ensure we haven't exceeded word length
       if (indexToCheck >= _targetWord.length) return;
 
-      // COMPARE with Target
-      if (charTyped == _targetWord[indexToCheck]) {
+      // Get expected character from target
+      String expectedChar = _targetWord[indexToCheck];
+
+      // COMPARE with Target (handles both regular chars and spaces)
+      if (charTyped == expectedChar) {
         // ✅ CORRECT: Accept it
+        HapticFeedback.lightImpact(); // Light feedback for correct input
+
         setState(() {
           _currentInput = cleanValue;
           _errorIndex = null; // Clear any previous error flag
         });
-        
+
         // Check for Win
         if (_currentInput.length == _targetWord.length) {
           _handleWin();
@@ -246,7 +322,7 @@ class _SurvivalPageState extends State<SurvivalPage> {
       } else {
         // ❌ WRONG: Block it
         HapticFeedback.heavyImpact(); // Strong vibration
-        
+
         // Reset Controller to previous valid input (refuse the new char)
         _textController.value = TextEditingValue(
           text: _currentInput,
@@ -316,16 +392,20 @@ class _SurvivalPageState extends State<SurvivalPage> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        backgroundColor: AppColors.cardColor,
-        title: Icon(win ? Icons.emoji_events : Icons.heart_broken, size: 50, color: win ? Colors.amber : Colors.red),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-            Text(win ? "SURVIVED!" : "GAME OVER", style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 10),
-            Text("Final Score: $_score", style: const TextStyle(color: Colors.grey, fontSize: 18)),
-        ]),
-        actions: [TextButton(onPressed: () { Navigator.pop(context); Navigator.pop(context); }, child: const Text("EXIT", style: TextStyle(color: Colors.white)))],
-      ),
+      builder: (dialogContext) {
+        final dr = Responsive(dialogContext);
+        return AlertDialog(
+          backgroundColor: AppColors.cardColor,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(dr.radius(16))),
+          title: Icon(win ? Icons.emoji_events : Icons.heart_broken, size: dr.iconSize(50), color: win ? Colors.amber : Colors.red),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+              Text(win ? S.survived : S.gameOver, style: TextStyle(color: Colors.white, fontSize: dr.fontSize(24), fontWeight: FontWeight.bold)),
+              SizedBox(height: dr.spacing(10)),
+              Text("${S.finalScore} $_score", style: TextStyle(color: Colors.grey, fontSize: dr.fontSize(18))),
+          ]),
+          actions: [TextButton(onPressed: () { Navigator.pop(dialogContext); Navigator.pop(context); }, child: Text(S.exit, style: TextStyle(color: Colors.white, fontSize: dr.fontSize(14))))],
+        );
+      },
     );
   }
 
@@ -351,98 +431,362 @@ class _SurvivalPageState extends State<SurvivalPage> {
 
   @override
   Widget build(BuildContext context) {
+    final r = Responsive(context);
+
     if (_isLoading) {
       return Scaffold(
-        backgroundColor: AppColors.background, 
+        backgroundColor: AppColors.background,
         body: Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
           const CircularProgressIndicator(),
-          const SizedBox(height: 20),
-          Text(_debugStatus, style: const TextStyle(color: Colors.white70))
+          SizedBox(height: r.spacing(20)),
+          Text(_debugStatus, style: TextStyle(color: Colors.white70, fontSize: r.fontSize(14)))
         ]))
       );
     }
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
-        backgroundColor: Colors.transparent,
+        backgroundColor: AppColors.background,
         elevation: 0,
         centerTitle: true,
-        leading: IconButton(icon: const Icon(Icons.close, color: Colors.grey), onPressed: () => Navigator.pop(context)),
-        title: Row(mainAxisSize: MainAxisSize.min, children: [
-            const Icon(Icons.favorite, color: Colors.redAccent),
-            const SizedBox(width: 8),
-            Text("$_lives", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 20)),
-            const SizedBox(width: 20),
-            const Icon(Icons.star, color: Colors.amber),
-            const SizedBox(width: 8),
-            Text("$_score", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 20)),
-        ]),
+        leading: IconButton(
+          icon: Icon(Icons.close_rounded, color: Colors.white70, size: r.iconSize(28)),
+          onPressed: () => Navigator.pop(context)
+        ),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Lives
+            Container(
+              padding: EdgeInsets.symmetric(horizontal: r.spacing(12), vertical: r.spacing(6)),
+              decoration: BoxDecoration(
+                color: Colors.redAccent.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(r.radius(12)),
+                border: Border.all(color: Colors.redAccent.withOpacity(0.3), width: 1.5),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.favorite, color: Colors.redAccent, size: r.iconSize(20)),
+                  SizedBox(width: r.spacing(6)),
+                  Text(
+                    "$_lives",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w900,
+                      fontSize: r.fontSize(18),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(width: r.spacing(16)),
+            // Score
+            Container(
+              padding: EdgeInsets.symmetric(horizontal: r.spacing(12), vertical: r.spacing(6)),
+              decoration: BoxDecoration(
+                color: Colors.amber.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(r.radius(12)),
+                border: Border.all(color: Colors.amber.withOpacity(0.3), width: 1.5),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.star, color: Colors.amber, size: r.iconSize(20)),
+                  SizedBox(width: r.spacing(6)),
+                  Text(
+                    "$_score",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w900,
+                      fontSize: r.fontSize(18),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
         actions: [
-          IconButton(
-            icon: Icon(_showHint ? Icons.visibility_off : Icons.visibility, color: Colors.white54),
-            onPressed: _useHint, 
+          Padding(
+            padding: EdgeInsets.only(right: r.spacing(8)),
+            child: IconButton(
+              icon: Icon(
+                _showHint ? Icons.visibility_off_rounded : Icons.lightbulb_outline_rounded,
+                color: _showHint ? AppColors.primary : Colors.white54,
+                size: r.iconSize(26),
+              ),
+              onPressed: _useHint,
+              tooltip: S.hintCost,
+            ),
           )
         ],
       ),
       body: Column(children: [
-          LinearProgressIndicator(value: _progress, backgroundColor: Colors.grey.shade900, valueColor: AlwaysStoppedAnimation(_progress > 0.5 ? Colors.green : (_progress > 0.2 ? Colors.amber : Colors.red)), minHeight: 6),
-          const Spacer(),
-          Padding(padding: const EdgeInsets.symmetric(horizontal: 20), child: Column(children: [
-                Text(_promptWord, style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold), textAlign: TextAlign.center, maxLines: 2),
-                if (_showHint) ...[const SizedBox(height: 10), Text(_audioTargetWord, style: const TextStyle(color: AppColors.primary, fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 2))] 
-                else ...[const SizedBox(height: 10), const Text("Type the translation", style: TextStyle(color: Colors.grey, fontSize: 14))]
-          ])),
-          const Spacer(),
-          
-          // 🔠 VISUAL SLOTS
-          Container(padding: const EdgeInsets.symmetric(horizontal: 16), alignment: Alignment.center, child: Wrap(alignment: WrapAlignment.center, spacing: 6, runSpacing: 10, children: List.generate(_targetWord.length, (index) {
+          // Enhanced Progress Bar with Timer
+          Container(
+            padding: EdgeInsets.symmetric(vertical: r.spacing(6)),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Colors.black.withOpacity(0.5), Colors.transparent],
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+              ),
+            ),
+            child: Column(
+              children: [
+                LinearProgressIndicator(
+                  value: _progress,
+                  backgroundColor: Colors.grey.shade900,
+                  valueColor: AlwaysStoppedAnimation(
+                    _progress > 0.5 ? AppColors.success : (_progress > 0.2 ? Colors.amber : Colors.redAccent)
+                  ),
+                  minHeight: r.scale(6),
+                ),
+                SizedBox(height: r.spacing(6)),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.timer_outlined,
+                      color: _progress > 0.2 ? Colors.white70 : Colors.redAccent,
+                      size: r.iconSize(18),
+                    ),
+                    SizedBox(width: r.spacing(4)),
+                    Text(
+                      "$_timeLeft s",
+                      style: TextStyle(
+                        color: _progress > 0.2 ? Colors.white : Colors.redAccent,
+                        fontSize: r.fontSize(16),
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          SizedBox(height: r.spacing(12)),
+
+          // Enhanced Prompt Area
+          Padding(
+            padding: EdgeInsets.symmetric(horizontal: r.spacing(20)),
+            child: Container(
+              padding: EdgeInsets.symmetric(horizontal: r.spacing(14), vertical: r.spacing(8)),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.05),
+                borderRadius: BorderRadius.circular(r.radius(16)),
+                border: Border.all(color: Colors.white.withOpacity(0.1), width: 1.5),
+              ),
+              child: Column(
+                children: [
+                  // Mode Indicator Badge
+                  Container(
+                    padding: EdgeInsets.symmetric(horizontal: r.spacing(8), vertical: r.spacing(3)),
+                    decoration: BoxDecoration(
+                      color: widget.isPracticeMode
+                        ? Colors.blue.withOpacity(0.2)
+                        : AppColors.primary.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(r.radius(8)),
+                      border: Border.all(
+                        color: widget.isPracticeMode
+                          ? Colors.blue.withOpacity(0.5)
+                          : AppColors.primary.withOpacity(0.5),
+                        width: 1,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          widget.isPracticeMode ? Icons.sports_esports : Icons.school,
+                          color: widget.isPracticeMode ? Colors.blue : AppColors.primary,
+                          size: r.iconSize(12),
+                        ),
+                        SizedBox(width: r.spacing(4)),
+                        Text(
+                          widget.isPracticeMode ? S.practice : S.review,
+                          style: TextStyle(
+                            color: widget.isPracticeMode ? Colors.blue : AppColors.primary,
+                            fontSize: r.fontSize(9),
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 1,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  SizedBox(height: r.spacing(6)),
+                  Text(
+                    S.translate,
+                    style: TextStyle(
+                      color: Colors.white38,
+                      fontSize: r.fontSize(10),
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 2,
+                    ),
+                  ),
+                  SizedBox(height: r.spacing(8)),
+                  Text(
+                    _promptWord,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: r.fontSize(24),
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 0.5,
+                    ),
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                  ),
+                  if (_showHint) ...[
+                    SizedBox(height: r.spacing(6)),
+                    Container(
+                      padding: EdgeInsets.symmetric(horizontal: r.spacing(10), vertical: r.spacing(4)),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(r.radius(8)),
+                        border: Border.all(color: AppColors.primary.withOpacity(0.5), width: 1.5),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.lightbulb, color: AppColors.primary, size: r.iconSize(12)),
+                          SizedBox(width: r.spacing(4)),
+                          Text(
+                            _audioTargetWord,
+                            style: TextStyle(
+                              color: AppColors.primary,
+                              fontSize: r.fontSize(14),
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 1.5,
+                            ),
+                          ),
+                        ],
+                      ),
+                    )
+                  ]
+                ],
+              ),
+            ),
+          ),
+          SizedBox(height: r.spacing(12)),
+
+          // 🔠 VISUAL SLOTS - Enhanced Design
+          Container(padding: EdgeInsets.symmetric(horizontal: r.spacing(16)), alignment: Alignment.center, child: Wrap(alignment: WrapAlignment.center, spacing: r.spacing(6), runSpacing: r.spacing(8), children: List.generate(_targetWord.length, (index) {
                 String char = index < _currentInput.length ? _currentInput[index] : "";
                 bool isSpace = _targetWord[index] == ' ';
                 bool isFilled = char.isNotEmpty;
-                
-                // --- COLOR LOGIC ---
-                Color boxColor = Colors.white.withOpacity(0.05);
-                Color borderColor = Colors.white.withOpacity(0.2);
 
-                if (_slotColors != null) { 
+                final slotSize = r.survivalSlotSize;
+
+                // --- ENHANCED COLOR LOGIC ---
+                Color boxColor = AppColors.cardColor;
+                Color borderColor = Colors.white.withOpacity(0.3);
+                Color textColor = Colors.white;
+
+                if (_slotColors != null) {
                     // Final Result (All Green or All Red)
-                    boxColor = _slotColors![index]; 
-                    borderColor = Colors.transparent; 
-                } 
+                    boxColor = _slotColors![index];
+                    borderColor = Colors.transparent;
+                    textColor = Colors.white;
+                }
                 else if (_errorIndex == index) {
                     // 🚨 CURRENT ERROR FLASH (Red)
                     boxColor = Colors.redAccent;
                     borderColor = Colors.redAccent;
+                    textColor = Colors.white;
                 }
-                else if (isFilled) { 
-                    // Standard Typed Letter (Primary)
-                    boxColor = AppColors.primary; 
-                    borderColor = Colors.transparent; 
-                } 
-                else if (isSpace) { 
-                    boxColor = Colors.transparent; 
-                    borderColor = Colors.transparent; 
+                else if (isFilled) {
+                    // Standard Typed Letter (Primary with glow)
+                    boxColor = AppColors.primary;
+                    borderColor = AppColors.primary;
+                    textColor = Colors.black;
+                }
+                else if (isSpace) {
+                    boxColor = Colors.transparent;
+                    borderColor = Colors.transparent;
                 }
 
-                if (isSpace) return Container(width: 20, height: 50, alignment: Alignment.bottomCenter, child: Container(height: 2, width: 12, color: Colors.white24));
-                
+                // SPACE INDICATOR - More obvious design
+                if (isSpace) {
+                  return Container(
+                    width: slotSize.width * 0.6,
+                    height: slotSize.height,
+                    alignment: Alignment.center,
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Container(
+                          height: r.scale(3),
+                          width: slotSize.width * 0.45,
+                          decoration: BoxDecoration(
+                            color: isFilled ? AppColors.primary : Colors.white.withOpacity(0.4),
+                            borderRadius: BorderRadius.circular(r.radius(2)),
+                            boxShadow: isFilled ? [
+                              BoxShadow(
+                                color: AppColors.primary.withOpacity(0.5),
+                                blurRadius: r.scale(8),
+                                spreadRadius: r.scale(2),
+                              )
+                            ] : [],
+                          ),
+                        ),
+                        SizedBox(height: r.spacing(3)),
+                        Text(
+                          S.space,
+                          style: TextStyle(
+                            fontSize: r.fontSize(7),
+                            fontWeight: FontWeight.bold,
+                            color: isFilled ? AppColors.primary : Colors.white.withOpacity(0.3),
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+
                 return AnimatedContainer(
-                  duration: const Duration(milliseconds: 100), 
-                  width: 40, height: 50, 
-                  alignment: Alignment.center, 
+                  duration: const Duration(milliseconds: 150),
+                  curve: Curves.easeOut,
+                  width: slotSize.width,
+                  height: slotSize.height,
+                  alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: boxColor, 
-                    borderRadius: BorderRadius.circular(8), 
-                    border: Border.all(color: borderColor, width: 1.5), 
-                    boxShadow: (isFilled || _slotColors != null || _errorIndex == index) 
-                        ? [BoxShadow(color: boxColor.withOpacity(0.4), blurRadius: 4, offset: const Offset(0, 2))] 
-                        : []
-                  ), 
-                  child: Text(char, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black))
+                    color: boxColor,
+                    borderRadius: BorderRadius.circular(r.radius(12)),
+                    border: Border.all(color: borderColor, width: 2),
+                    boxShadow: (isFilled || _slotColors != null || _errorIndex == index)
+                        ? [
+                            BoxShadow(
+                              color: boxColor.withOpacity(0.5),
+                              blurRadius: r.scale(12),
+                              spreadRadius: r.scale(2),
+                              offset: Offset(0, r.scale(3))
+                            )
+                          ]
+                        : [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.2),
+                              blurRadius: r.scale(4),
+                              offset: Offset(0, r.scale(2))
+                            )
+                          ]
+                  ),
+                  child: Text(
+                    char,
+                    style: TextStyle(
+                      fontSize: r.fontSize(22),
+                      fontWeight: FontWeight.w900,
+                      color: textColor,
+                      letterSpacing: 0.5,
+                    )
+                  )
                 );
           }))),
-          
-          const Spacer(flex: 2),
+
+          SizedBox(height: r.spacing(8)),
           Opacity(opacity: 0.0, child: TextField(controller: _textController, focusNode: _focusNode, autocorrect: false, enableSuggestions: false, keyboardType: TextInputType.visiblePassword, textInputAction: TextInputAction.done, onChanged: _handleInput, style: const TextStyle(color: Colors.transparent), cursorColor: Colors.transparent)),
       ]),
     );

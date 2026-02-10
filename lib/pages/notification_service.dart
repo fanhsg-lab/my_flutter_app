@@ -88,18 +88,36 @@ class NotificationService {
 
     const NotificationDetails details = NotificationDetails(android: androidDetails);
 
-    await flutterLocalNotificationsPlugin.zonedSchedule(
-      0, // ID
-      title,
-      body,
-      scheduledDate,
-      details,
-      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-      uiLocalNotificationDateInterpretation:
-          UILocalNotificationDateInterpretation.absoluteTime,
-    );
-    
-    print("🔔 Scheduled: '$body' for $scheduledDate");
+    try {
+      await flutterLocalNotificationsPlugin.zonedSchedule(
+        0, // ID
+        title,
+        body,
+        scheduledDate,
+        details,
+        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+      );
+      print("🔔 Scheduled exact: '$body' for $scheduledDate");
+    } catch (e) {
+      // Exact alarms not permitted — fall back to inexact
+      try {
+        await flutterLocalNotificationsPlugin.zonedSchedule(
+          0,
+          title,
+          body,
+          scheduledDate,
+          details,
+          androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+          uiLocalNotificationDateInterpretation:
+              UILocalNotificationDateInterpretation.absoluteTime,
+        );
+        print("🔔 Scheduled inexact: '$body' for ~$scheduledDate");
+      } catch (e2) {
+        print("⚠️ Could not schedule notification: $e2");
+      }
+    }
   }
 
   Future<bool> areNotificationsEnabled() async {
