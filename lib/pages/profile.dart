@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:heroicons/heroicons.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme.dart';
 import '../local_db.dart';
@@ -76,9 +77,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   void _openFeedback() {
-    showDialog(
+    showModalBottomSheet(
       context: context,
-      builder: (_) => const _FeedbackDialog(),
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => const _FeedbackSheet(),
     );
   }
 
@@ -132,7 +135,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               child: const CircleAvatar(
                 radius: 38,
                 backgroundColor: AppColors.cardColor,
-                child: Icon(Icons.person, size: 38, color: Colors.white),
+                child: HeroIcon(HeroIcons.user, size: 38, color: Colors.white, style: HeroIconStyle.outline),
               ),
             ),
 
@@ -149,7 +152,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(width: 6),
-                  Icon(Icons.edit, color: Colors.grey.shade600, size: 14),
+                  HeroIcon(HeroIcons.pencil, color: Colors.grey.shade600, size: 14, style: HeroIconStyle.outline),
                 ],
               ),
             ),
@@ -191,7 +194,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
               child: ListTile(
                 dense: true,
-                leading: const Icon(Icons.notifications_outlined, color: AppColors.primary),
+                leading: const HeroIcon(HeroIcons.bell, color: AppColors.primary, style: HeroIconStyle.outline),
                 title: Text(S.notifications, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                 trailing: Switch(
                   value: _notificationsEnabled,
@@ -217,10 +220,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 borderRadius: BorderRadius.circular(12),
               ),
               child: ListTile(
-                leading: const Icon(Icons.feedback_outlined, color: AppColors.primary),
+                leading: const HeroIcon(HeroIcons.chatBubbleLeftRight, color: AppColors.primary, style: HeroIconStyle.outline),
                 title: Text(S.contactDeveloper, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
                 subtitle: Text(S.contactMessage, style: TextStyle(color: Colors.grey.shade500, fontSize: 11)),
-                trailing: const Icon(Icons.arrow_forward_ios, color: Colors.grey, size: 14),
+                trailing: const HeroIcon(HeroIcons.chevronRight, color: Colors.grey, size: 14, style: HeroIconStyle.outline),
                 onTap: _openFeedback,
               ),
             ),
@@ -282,7 +285,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       ),
       child: ListTile(
         dense: true,
-        leading: const Icon(Icons.language, color: AppColors.primary),
+        leading: const HeroIcon(HeroIcons.language, color: AppColors.primary, style: HeroIconStyle.outline),
         title: Text(S.language, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         trailing: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -299,7 +302,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
               ),
               const SizedBox(width: 4),
-              const Icon(Icons.swap_horiz, color: AppColors.primary, size: 18),
+              const HeroIcon(HeroIcons.arrowsRightLeft, color: AppColors.primary, size: 18, style: HeroIconStyle.outline),
             ],
           ),
         ),
@@ -311,16 +314,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 }
 
-class _FeedbackDialog extends StatefulWidget {
-  const _FeedbackDialog();
+class _FeedbackSheet extends StatefulWidget {
+  const _FeedbackSheet();
 
   @override
-  State<_FeedbackDialog> createState() => _FeedbackDialogState();
+  State<_FeedbackSheet> createState() => _FeedbackSheetState();
 }
 
-class _FeedbackDialogState extends State<_FeedbackDialog> {
+class _FeedbackSheetState extends State<_FeedbackSheet> {
   final _controller = TextEditingController();
   bool _sending = false;
+  bool _sent = false;
+  String? _error;
 
   @override
   void dispose() {
@@ -331,61 +336,170 @@ class _FeedbackDialogState extends State<_FeedbackDialog> {
   Future<void> _submit() async {
     final msg = _controller.text.trim();
     if (msg.isEmpty) return;
-    setState(() => _sending = true);
+    setState(() { _sending = true; _error = null; });
     try {
       await Supabase.instance.client.from('feedback').insert({
         'user_id': Supabase.instance.client.auth.currentUser?.id,
         'message': msg,
       });
       if (!mounted) return;
-      Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(S.feedbackSent)),
-      );
+      FocusScope.of(context).unfocus();
+      setState(() { _sending = false; _sent = true; });
+      Future.delayed(const Duration(seconds: 2), () {
+        if (mounted) Navigator.pop(context);
+      });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _sending = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to send feedback')),
-      );
+      setState(() { _sending = false; _error = 'Failed to send. Please try again.'; });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      backgroundColor: AppColors.cardColor,
-      title: Text(S.contactDeveloper, style: const TextStyle(color: Colors.white)),
-      content: TextField(
-        controller: _controller,
-        maxLines: 5,
-        style: const TextStyle(color: Colors.white),
-        decoration: InputDecoration(
-          hintText: S.feedbackHint,
-          hintStyle: TextStyle(color: Colors.grey.shade600),
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: BorderSide(color: Colors.grey.shade700),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: AppColors.primary),
-          ),
-        ),
+    return Container(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      decoration: const BoxDecoration(
+        color: AppColors.cardColor,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      actions: [
-        TextButton(
-          onPressed: _sending ? null : () => Navigator.pop(context),
-          child: Text(S.cancel, style: const TextStyle(color: Colors.grey)),
-        ),
-        TextButton(
-          onPressed: _sending ? null : _submit,
-          child: _sending
-              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-              : Text(S.send, style: const TextStyle(color: AppColors.primary)),
-        ),
-      ],
+      child: _sent ? _buildSuccess() : _buildForm(),
+    );
+  }
+
+  Widget _buildSuccess() {
+    return Padding(
+      key: const ValueKey('success'),
+      padding: const EdgeInsets.symmetric(vertical: 60, horizontal: 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppColors.primary.withOpacity(0.15),
+            ),
+            child: const HeroIcon(HeroIcons.check, size: 48, color: AppColors.primary, style: HeroIconStyle.solid),
+          ),
+          const SizedBox(height: 20),
+          Text(S.feedbackSent, style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Text(S.contactMessage, style: TextStyle(color: Colors.grey.shade400, fontSize: 14)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildForm() {
+    final charCount = _controller.text.length;
+    return Padding(
+      key: const ValueKey('form'),
+      padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Drag handle
+          Center(
+            child: Container(
+              width: 40, height: 4,
+              decoration: BoxDecoration(color: Colors.grey.shade700, borderRadius: BorderRadius.circular(2)),
+            ),
+          ),
+          const SizedBox(height: 20),
+
+          // Header row
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const HeroIcon(HeroIcons.chatBubbleLeftRight, size: 22, color: AppColors.primary, style: HeroIconStyle.solid),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(S.contactDeveloper, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 2),
+                    Text(S.contactMessage, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
+                  ],
+                ),
+              ),
+              GestureDetector(
+                onTap: () => Navigator.pop(context),
+                child: Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(color: Colors.grey.shade800, shape: BoxShape.circle),
+                  child: const HeroIcon(HeroIcons.xMark, size: 16, color: Colors.grey, style: HeroIconStyle.solid),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+
+          // Text field
+          TextField(
+            controller: _controller,
+            maxLines: 6,
+            maxLength: 500,
+            autofocus: false,
+            style: const TextStyle(color: Colors.white, fontSize: 15),
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+              hintText: S.feedbackHint,
+              hintStyle: TextStyle(color: Colors.grey.shade600),
+              counterText: '',
+              filled: true,
+              fillColor: AppColors.background,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
+              ),
+              contentPadding: const EdgeInsets.all(16),
+            ),
+          ),
+          const SizedBox(height: 8),
+
+          // Character count
+          Align(
+            alignment: Alignment.centerRight,
+            child: Text('$charCount / 500', style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
+          ),
+
+          // Error message
+          if (_error != null) ...[
+            const SizedBox(height: 8),
+            Text(_error!, style: const TextStyle(color: AppColors.error, fontSize: 13)),
+          ],
+
+          const SizedBox(height: 16),
+
+          // Send button
+          SizedBox(
+            width: double.infinity,
+            height: 50,
+            child: ElevatedButton(
+              onPressed: _sending || _controller.text.trim().isEmpty ? null : _submit,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                disabledBackgroundColor: AppColors.primary.withOpacity(0.3),
+                foregroundColor: Colors.black,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                elevation: 0,
+              ),
+              child: _sending
+                  ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.black))
+                  : Text(S.send, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

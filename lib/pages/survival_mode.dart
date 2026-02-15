@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:heroicons/heroicons.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../local_db.dart';
 import '../theme.dart';
@@ -205,6 +206,15 @@ class _SurvivalPageState extends State<SurvivalPage> {
         final articleRegex = RegExp(r'^(THE|A|AN)\s+', caseSensitive: false);
         cleanBase = cleanBase.replaceAll(articleRegex, '').trim();
         cleanBase = cleanBase.replaceAll(RegExp(r'[.!?]'), '');
+        // Handle inline alternatives like "sb/sth" → pick first variant per word
+        cleanBase = cleanBase.split(' ').map((w) {
+          if (w.contains('/')) return w.split('/')[0];
+          return w;
+        }).join(' ');
+        // Replace hyphens with spaces: "in-store" → "IN STORE"
+        cleanBase = cleanBase.replaceAll('-', ' ');
+        // Remove apostrophes: "month's" → "MONTHS"
+        cleanBase = cleanBase.replaceAll("'", '').replaceAll('\u2019', '');
       }
 
       if (cleanBase.isEmpty) return null;
@@ -388,7 +398,7 @@ class _SurvivalPageState extends State<SurvivalPage> {
 
   void _finishGame({required bool win}) {
     FocusScope.of(context).unfocus();
-    NotificationService().scheduleSmartReminder();
+    NotificationService().onAppOpened();
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -397,7 +407,7 @@ class _SurvivalPageState extends State<SurvivalPage> {
         return AlertDialog(
           backgroundColor: AppColors.cardColor,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(dr.radius(16))),
-          title: Icon(win ? Icons.emoji_events : Icons.heart_broken, size: dr.iconSize(50), color: win ? Colors.amber : Colors.red),
+          title: HeroIcon(win ? HeroIcons.trophy : HeroIcons.faceFrown, size: dr.iconSize(50), color: win ? Colors.amber : Colors.red, style: HeroIconStyle.solid),
           content: Column(mainAxisSize: MainAxisSize.min, children: [
               Text(win ? S.survived : S.gameOver, style: TextStyle(color: Colors.white, fontSize: dr.fontSize(24), fontWeight: FontWeight.bold)),
               SizedBox(height: dr.spacing(10)),
@@ -450,7 +460,7 @@ class _SurvivalPageState extends State<SurvivalPage> {
         elevation: 0,
         centerTitle: true,
         leading: IconButton(
-          icon: Icon(Icons.close_rounded, color: Colors.white70, size: r.iconSize(28)),
+          icon: HeroIcon(HeroIcons.xMark, color: Colors.white70, size: r.iconSize(28), style: HeroIconStyle.outline),
           onPressed: () => Navigator.pop(context)
         ),
         title: Row(
@@ -467,7 +477,7 @@ class _SurvivalPageState extends State<SurvivalPage> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.favorite, color: Colors.redAccent, size: r.iconSize(20)),
+                  HeroIcon(HeroIcons.heart, color: Colors.redAccent, size: r.iconSize(20), style: HeroIconStyle.solid),
                   SizedBox(width: r.spacing(6)),
                   Text(
                     "$_lives",
@@ -492,7 +502,7 @@ class _SurvivalPageState extends State<SurvivalPage> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.star, color: Colors.amber, size: r.iconSize(20)),
+                  HeroIcon(HeroIcons.star, color: Colors.amber, size: r.iconSize(20), style: HeroIconStyle.solid),
                   SizedBox(width: r.spacing(6)),
                   Text(
                     "$_score",
@@ -511,10 +521,11 @@ class _SurvivalPageState extends State<SurvivalPage> {
           Padding(
             padding: EdgeInsets.only(right: r.spacing(8)),
             child: IconButton(
-              icon: Icon(
-                _showHint ? Icons.visibility_off_rounded : Icons.lightbulb_outline_rounded,
+              icon: HeroIcon(
+                _showHint ? HeroIcons.eyeSlash : HeroIcons.lightBulb,
                 color: _showHint ? AppColors.primary : Colors.white54,
                 size: r.iconSize(26),
+                style: HeroIconStyle.outline,
               ),
               onPressed: _useHint,
               tooltip: S.hintCost,
@@ -522,7 +533,7 @@ class _SurvivalPageState extends State<SurvivalPage> {
           )
         ],
       ),
-      body: Column(children: [
+      body: SingleChildScrollView(child: Column(children: [
           // Enhanced Progress Bar with Timer
           Container(
             padding: EdgeInsets.symmetric(vertical: r.spacing(6)),
@@ -547,10 +558,11 @@ class _SurvivalPageState extends State<SurvivalPage> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Icon(
-                      Icons.timer_outlined,
+                    HeroIcon(
+                      HeroIcons.clock,
                       color: _progress > 0.2 ? Colors.white70 : Colors.redAccent,
                       size: r.iconSize(18),
+                      style: HeroIconStyle.outline,
                     ),
                     SizedBox(width: r.spacing(4)),
                     Text(
@@ -599,10 +611,11 @@ class _SurvivalPageState extends State<SurvivalPage> {
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(
-                          widget.isPracticeMode ? Icons.sports_esports : Icons.school,
+                        HeroIcon(
+                          widget.isPracticeMode ? HeroIcons.puzzlePiece : HeroIcons.academicCap,
                           color: widget.isPracticeMode ? Colors.blue : AppColors.primary,
                           size: r.iconSize(12),
+                          style: HeroIconStyle.outline,
                         ),
                         SizedBox(width: r.spacing(4)),
                         Text(
@@ -651,7 +664,7 @@ class _SurvivalPageState extends State<SurvivalPage> {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.lightbulb, color: AppColors.primary, size: r.iconSize(12)),
+                          HeroIcon(HeroIcons.lightBulb, color: AppColors.primary, size: r.iconSize(12), style: HeroIconStyle.solid),
                           SizedBox(width: r.spacing(4)),
                           Text(
                             _audioTargetWord,
@@ -788,7 +801,7 @@ class _SurvivalPageState extends State<SurvivalPage> {
 
           SizedBox(height: r.spacing(8)),
           Opacity(opacity: 0.0, child: TextField(controller: _textController, focusNode: _focusNode, autocorrect: false, enableSuggestions: false, keyboardType: TextInputType.visiblePassword, textInputAction: TextInputAction.done, onChanged: _handleInput, style: const TextStyle(color: Colors.transparent), cursorColor: Colors.transparent)),
-      ]),
+      ])),
     );
   }
 }

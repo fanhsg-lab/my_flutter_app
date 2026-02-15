@@ -1,5 +1,7 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:heroicons/heroicons.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme.dart';
 import '../local_db.dart';
@@ -20,22 +22,46 @@ class MainScreen extends StatefulWidget {
   State<MainScreen> createState() => _MainScreenState();
 }
 
-class _MainScreenState extends State<MainScreen> {
+class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateMixin {
   int _streak = 0;
-  int _totalLearnedWords = 0; // New Stat
+  int _totalLearnedWords = 0;
   int _currentLessonIndex = 0;
   String _selectedMode = 'Test';
-  String _sourceLanguage = 'es'; // 'es' for Spanish, 'en' for English
+  String _sourceLanguage = 'es';
   String _selectedLanguage = 'Gr -> Esp';
+  String _bookTitle = '';
+  String _bookLevel = '';
   int _bottomNavIndex = 0;
+  int _previousNavIndex = 0;
   bool _isLoading = true;
   List<LessonData> _lessons = [];
+
+  late final AnimationController _slideController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 500),
+  );
 
   @override
   void initState() {
     super.initState();
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+    _slideController.value = 1.0; // start completed (no animation on first load)
     _initialLoad();
+  }
+
+  @override
+  void dispose() {
+    _slideController.dispose();
+    super.dispose();
+  }
+
+  void _navigateToTab(int index) {
+    if (index == _bottomNavIndex) return;
+    setState(() {
+      _previousNavIndex = _bottomNavIndex;
+      _bottomNavIndex = index;
+    });
+    _slideController.forward(from: 0.0);
   }
 
   Future<void> _initialLoad() async {
@@ -104,12 +130,25 @@ class _MainScreenState extends State<MainScreen> {
     try {
       final data = await LocalDB.instance.getDashboardLessons();
       final srcLang = await LocalDB.instance.getBookSourceLanguage();
+      final bookId = await LocalDB.instance.getCurrentBookId();
+      String bookTitle = '';
+      String bookLevel = '';
+      if (bookId != null) {
+        final db = await LocalDB.instance.database;
+        final rows = await db.query('books', where: 'id = ?', whereArgs: [bookId]);
+        if (rows.isNotEmpty) {
+          bookTitle = rows.first['title'] as String? ?? '';
+          bookLevel = rows.first['level'] as String? ?? '';
+        }
+      }
       if (mounted) {
         final shortLabel = S.sourceLanguageShort(srcLang);
         setState(() {
           _lessons = data;
           _sourceLanguage = srcLang;
           _selectedLanguage = 'Gr -> $shortLabel';
+          _bookTitle = bookTitle;
+          _bookLevel = bookLevel;
           _isLoading = false;
         });
       }
@@ -200,7 +239,10 @@ class _MainScreenState extends State<MainScreen> {
       debugPrint("🔥 Final Streak Calculation: $streak");
 
       // --- 4. STATS (Words Learned) ---
-      final learnedRes = await db.rawQuery("SELECT COUNT(*) FROM user_progress WHERE status IN ('learned', 'consolidating')");
+      final learnedRes = await db.rawQuery(
+        "SELECT COUNT(*) FROM user_progress WHERE user_id = ? AND status IN ('learned', 'consolidating')",
+        [userId],
+      );
       int learnedCount = Sqflite.firstIntValue(learnedRes) ?? 0;
 
       if (mounted) {
@@ -230,9 +272,9 @@ class _MainScreenState extends State<MainScreen> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceAround,
                 children: [
-                  _buildPopupStat(S.dayStreak, "$_streak", Colors.orange, Icons.local_fire_department),
+                  _buildPopupStat(S.dayStreak, "$_streak", Colors.orange, HeroIcon(HeroIcons.fire, style: HeroIconStyle.solid, size: 32, color: Colors.orange)),
                   Container(width: 1, height: 50, color: Colors.grey.shade800),
-                  _buildPopupStat(S.wordsLearned, "$_totalLearnedWords", AppColors.success, Icons.school),
+                  _buildPopupStat(S.wordsLearned, "$_totalLearnedWords", AppColors.success, HeroIcon(HeroIcons.academicCap, style: HeroIconStyle.solid, size: 32, color: AppColors.success)),
                 ],
               ),
               const SizedBox(height: 24),
@@ -245,10 +287,10 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
-  Widget _buildPopupStat(String label, String value, Color color, IconData icon) {
+  Widget _buildPopupStat(String label, String value, Color color, Widget iconWidget) {
     return Column(
       children: [
-        Icon(icon, color: color, size: 32),
+        iconWidget,
         const SizedBox(height: 8),
         Text(value, style: TextStyle(color: color, fontSize: 24, fontWeight: FontWeight.bold)),
         Text(label, style: const TextStyle(color: Colors.grey, fontSize: 12)),
@@ -346,17 +388,17 @@ class _MainScreenState extends State<MainScreen> {
                                               AnimatedRotation(
                                                 turns: isExpanded ? 0.25 : 0,
                                                 duration: const Duration(milliseconds: 200),
-                                                child: Icon(
-                                                  Icons.chevron_right,
+                                                child: HeroIcon(
+                                                  HeroIcons.chevronRight,
                                                   color: isCurrentTeacher ? AppColors.primary : Colors.grey,
-                                                  size: 20,
+                                                  size: 20, style: HeroIconStyle.outline,
                                                 ),
                                               ),
                                               const SizedBox(width: 4),
-                                              Icon(
-                                                Icons.person,
+                                              HeroIcon(
+                                                HeroIcons.user,
                                                 color: isCurrentTeacher ? AppColors.primary : Colors.grey,
-                                                size: 20,
+                                                size: 20, style: HeroIconStyle.outline,
                                               ),
                                               const SizedBox(width: 8),
                                               Expanded(
@@ -429,10 +471,10 @@ class _MainScreenState extends State<MainScreen> {
                                                   ),
                                                   child: Row(
                                                     children: [
-                                                      Icon(
-                                                        Icons.menu_book,
+                                                      HeroIcon(
+                                                        HeroIcons.bookOpen,
                                                         color: isSelected ? AppColors.primary : Colors.grey.shade600,
-                                                        size: 18,
+                                                        size: 18, style: HeroIconStyle.outline,
                                                       ),
                                                       const SizedBox(width: 8),
                                                       Expanded(
@@ -454,8 +496,11 @@ class _MainScreenState extends State<MainScreen> {
                                                           ],
                                                         ),
                                                       ),
-                                                      if (isSelected)
-                                                        const Icon(Icons.check_circle, color: AppColors.primary, size: 16),
+                                                      Text(_languageFlag(book.sourceLanguage), style: const TextStyle(fontSize: 20)),
+                                                      if (isSelected) ...[
+                                                        const SizedBox(width: 6),
+                                                        const HeroIcon(HeroIcons.checkCircle, color: AppColors.primary, size: 16, style: HeroIconStyle.solid),
+                                                      ],
                                                     ],
                                                   ),
                                                 ),
@@ -489,27 +534,74 @@ class _MainScreenState extends State<MainScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
-      body: IndexedStack(
-        index: _bottomNavIndex,
-        children: [
-          _buildLearnView(),
-          const StatsPage(),
-          _buildLibraryView(),
-          const ProfileScreen(),
-        ],
+      body: AnimatedBuilder(
+        animation: _slideController,
+        builder: (context, _) {
+          final pages = <Widget>[
+            _buildLearnView(),
+            const StatsPage(),
+            _buildLibraryView(),
+            const ProfileScreen(),
+          ];
+
+          final direction = _bottomNavIndex > _previousNavIndex ? 1.0 : -1.0;
+          final progress = Curves.easeOutCubic.transform(_slideController.value);
+
+          return Stack(
+            children: List.generate(pages.length, (i) {
+              final isActive = i == _bottomNavIndex;
+              final isPrevious = i == _previousNavIndex && _slideController.isAnimating;
+
+              Offset translation;
+              if (isActive) {
+                translation = Offset(direction * (1.0 - progress), 0);
+              } else if (isPrevious) {
+                translation = Offset(-direction * progress, 0);
+              } else {
+                translation = Offset.zero;
+              }
+
+              return Visibility(
+                visible: isActive || isPrevious,
+                maintainState: true,
+                maintainAnimation: true,
+                child: FractionalTranslation(
+                  translation: translation,
+                  child: SizedBox.expand(child: pages[i]),
+                ),
+              );
+            }),
+          );
+        },
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _bottomNavIndex,
-        onTap: (i) => setState(() => _bottomNavIndex = i),
+        onTap: _navigateToTab,
         backgroundColor: AppColors.background,
         selectedItemColor: AppColors.primary,
-        unselectedItemColor: Colors.grey,
+        unselectedItemColor: Colors.grey.shade400,
         type: BottomNavigationBarType.fixed,
         items: [
-          BottomNavigationBarItem(icon: const Icon(Icons.home_filled), label: S.learn),
-          BottomNavigationBarItem(icon: const Icon(Icons.bar_chart), label: S.stats),
-          BottomNavigationBarItem(icon: const Icon(Icons.book), label: S.library),
-          BottomNavigationBarItem(icon: const Icon(Icons.person), label: S.profile),
+          BottomNavigationBarItem(
+            icon: HeroIcon(HeroIcons.home, style: HeroIconStyle.outline, size: 22),
+            activeIcon: HeroIcon(HeroIcons.home, style: HeroIconStyle.solid, size: 22, color: AppColors.primary),
+            label: S.learn,
+          ),
+          BottomNavigationBarItem(
+            icon: HeroIcon(HeroIcons.chartBar, style: HeroIconStyle.outline, size: 22),
+            activeIcon: HeroIcon(HeroIcons.chartBar, style: HeroIconStyle.solid, size: 22, color: AppColors.primary),
+            label: S.stats,
+          ),
+          BottomNavigationBarItem(
+            icon: HeroIcon(HeroIcons.bookOpen, style: HeroIconStyle.outline, size: 22),
+            activeIcon: HeroIcon(HeroIcons.bookOpen, style: HeroIconStyle.solid, size: 22, color: AppColors.primary),
+            label: S.library,
+          ),
+          BottomNavigationBarItem(
+            icon: HeroIcon(HeroIcons.user, style: HeroIconStyle.outline, size: 22),
+            activeIcon: HeroIcon(HeroIcons.user, style: HeroIconStyle.solid, size: 22, color: AppColors.primary),
+            label: S.profile,
+          ),
         ],
       ),
     );
@@ -523,11 +615,11 @@ class _MainScreenState extends State<MainScreen> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         centerTitle: true,
-        leading: IconButton(icon: Icon(Icons.menu_book, color: AppColors.primary, size: r.iconSize(24)), onPressed: _showBookSelector),
+        leading: IconButton(icon: HeroIcon(HeroIcons.bookOpen, color: AppColors.primary, size: r.iconSize(24), style: HeroIconStyle.outline), onPressed: _showBookSelector),
         title: Column(
           children: [
-            Text("${S.sourceLanguageName(_sourceLanguage)} A1", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: r.fontSize(18), letterSpacing: 1.5)),
-            Text(S.beginnerCourse, style: TextStyle(color: Colors.grey, fontSize: r.fontSize(12))),
+            Text(_bookTitle.isNotEmpty ? _bookTitle : S.sourceLanguageName(_sourceLanguage), style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: r.fontSize(18), letterSpacing: 1.5)),
+            if (_bookLevel.isNotEmpty) Text("Level: $_bookLevel", style: TextStyle(color: Colors.grey, fontSize: r.fontSize(12))),
           ],
         ),
         actions: [
@@ -546,7 +638,7 @@ class _MainScreenState extends State<MainScreen> {
                 children: [
                   Text("$_streak", style: TextStyle(color: Colors.orange, fontWeight: FontWeight.w900, fontSize: r.fontSize(16))),
                   r.gapW(4),
-                  Text("🔥", style: TextStyle(fontSize: r.fontSize(16))),
+                  HeroIcon(HeroIcons.fire, color: Colors.orange, size: r.iconSize(18), style: HeroIconStyle.solid),
                 ],
               ),
             ),
@@ -554,7 +646,7 @@ class _MainScreenState extends State<MainScreen> {
         ],
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+          ? const Center(child: _PoppingBubbleLoader())
           : _lessons.isEmpty
               ? Center(child: Text(S.noLessonsFound, style: TextStyle(color: Colors.white, fontSize: r.fontSize(16))))
               : Column(
@@ -599,11 +691,11 @@ class _MainScreenState extends State<MainScreen> {
                           r.gapH(12),
                           Row(
                             children: [
-                              _buildModeBtn("Game", S.game, Icons.sports_esports),
+                              _buildModeBtn("Game", S.game, HeroIcons.puzzlePiece),
                               r.gapW(10),
-                              _buildModeBtn("Test", S.test, Icons.quiz),
+                              _buildModeBtn("Test", S.test, HeroIcons.clipboardDocumentCheck),
                               r.gapW(10),
-                              _buildModeBtn("Survival", S.survival, Icons.timer),
+                              _buildModeBtn("Survival", S.survival, HeroIcons.clock),
                             ],
                           ),
                           r.gapH(15),
@@ -635,14 +727,14 @@ class _MainScreenState extends State<MainScreen> {
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
                                           ListTile(
-                                            leading: Icon(Icons.school, color: AppColors.primary, size: r.iconSize(24)),
+                                            leading: HeroIcon(HeroIcons.academicCap, color: AppColors.primary, size: r.iconSize(24), style: HeroIconStyle.outline),
                                             title: Text(S.reviewMode, style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: r.fontSize(14))),
                                             subtitle: Text(S.onlyDueWords, style: TextStyle(color: Colors.white70, fontSize: r.fontSize(12))),
                                             onTap: () => Navigator.pop(ctx, false),
                                           ),
                                           r.gapH(8),
                                           ListTile(
-                                            leading: Icon(Icons.sports_esports, color: Colors.blue, size: r.iconSize(24)),
+                                            leading: HeroIcon(HeroIcons.puzzlePiece, color: Colors.blue, size: r.iconSize(24), style: HeroIconStyle.outline),
                                             title: Text(S.practiceMode, style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: r.fontSize(14))),
                                             subtitle: Text(S.allWordsFromLesson, style: TextStyle(color: Colors.white70, fontSize: r.fontSize(12))),
                                             onTap: () => Navigator.pop(ctx, true),
@@ -734,6 +826,24 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
+
+
+  String _languageFlag(String lang) {
+    switch (lang) {
+      case 'es': return '🇪🇸';
+      case 'en': return '🇬🇧';
+      case 'fr': return '🇫🇷';
+      case 'de': return '🇩🇪';
+      case 'it': return '🇮🇹';
+      case 'pt': return '🇵🇹';
+      case 'el': return '🇬🇷';
+      case 'ja': return '🇯🇵';
+      case 'zh': return '🇨🇳';
+      case 'ko': return '🇰🇷';
+      default:   return '🌐';
+    }
+  }
+
   Widget _buildLessonCard(LessonData lesson, bool isActive) {
     final r = Responsive(context);
     final cardSize = r.lessonCardSize;
@@ -746,7 +856,7 @@ class _MainScreenState extends State<MainScreen> {
         height: cardSize.height,
         // Remove padding here so PageView fills the whole card
         decoration: BoxDecoration(
-          gradient: isActive ? LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [const Color(0xFF2C2C2C), const Color(0xFF1E1E1E)]) : const LinearGradient(colors: [Color(0xFF1A1A1A), Color(0xFF1A1A1A)]),
+          gradient: isActive ? LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [const Color(0xFF151618), const Color(0xFF111214)]) : const LinearGradient(colors: [Color(0xFF111214), Color(0xFF111214)]),
           borderRadius: BorderRadius.circular(r.radius(30)),
           boxShadow: isActive ? [BoxShadow(color: AppColors.primary.withOpacity(0.3), blurRadius: 20, offset: const Offset(0, 8))] : [],
           border: Border.all(color: isActive ? AppColors.primary : Colors.grey.shade900, width: isActive ? 2 : 1),
@@ -805,7 +915,7 @@ class _MainScreenState extends State<MainScreen> {
             ),
           ),
           // Scroll Indicator
-          Icon(Icons.keyboard_arrow_down, color: Colors.grey.withOpacity(0.5), size: r.iconSize(20)),
+          HeroIcon(HeroIcons.chevronDown, color: Colors.grey.withOpacity(0.5), size: r.iconSize(20), style: HeroIconStyle.outline),
 
           Container(
             padding: r.padding(vertical: 12, horizontal: 16),
@@ -932,7 +1042,7 @@ class _MainScreenState extends State<MainScreen> {
 
           // Scroll Indicator
           const SizedBox(height: 10),
-          Icon(Icons.keyboard_arrow_up, color: Colors.grey.withOpacity(0.5), size: 20),
+          HeroIcon(HeroIcons.chevronUp, color: Colors.grey.withOpacity(0.5), size: 20, style: HeroIconStyle.outline),
         ],
       ),
     );
@@ -944,7 +1054,7 @@ class _MainScreenState extends State<MainScreen> {
       Text(label, style: TextStyle(fontSize: r.fontSize(10), color: Colors.grey.shade400))
     ]);
   }
-  Widget _buildModeBtn(String key, String displayLabel, IconData icon) {
+  Widget _buildModeBtn(String key, String displayLabel, HeroIcons icon) {
     final r = Responsive(context);
     bool isSelected = _selectedMode == key;
     return Expanded(
@@ -961,7 +1071,7 @@ class _MainScreenState extends State<MainScreen> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, size: r.iconSize(18), color: isSelected ? Colors.black : Colors.grey),
+              HeroIcon(icon, size: r.iconSize(18), color: isSelected ? Colors.black : Colors.grey, style: HeroIconStyle.outline),
               r.gapW(8),
               Text(
                 displayLabel,
@@ -1049,8 +1159,13 @@ class _LibraryLessonTileState extends State<_LibraryLessonTile> {
         color: AppColors.cardColor,
         borderRadius: BorderRadius.circular(r.radius(12)),
       ),
+      clipBehavior: Clip.antiAlias,
       child: Theme(
-        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        data: Theme.of(context).copyWith(
+          dividerColor: Colors.transparent,
+          splashColor: AppColors.primary.withOpacity(0.08),
+          highlightColor: AppColors.primary.withOpacity(0.05),
+        ),
         child: ExpansionTile(
           tilePadding: EdgeInsets.symmetric(horizontal: r.spacing(16), vertical: r.spacing(4)),
           childrenPadding: EdgeInsets.zero,
@@ -1197,4 +1312,128 @@ class _LibraryLessonTileState extends State<_LibraryLessonTile> {
       ),
     );
   }
+}
+
+class _PoppingBubbleLoader extends StatefulWidget {
+  const _PoppingBubbleLoader();
+
+  @override
+  State<_PoppingBubbleLoader> createState() => _PoppingBubbleLoaderState();
+}
+
+class _PoppingBubbleLoaderState extends State<_PoppingBubbleLoader>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1200),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final t = _controller.value;
+        // Grow from 0 to 1 during 0..0.7, then pop during 0.7..1.0
+        final isPopping = t > 0.7;
+        final growT = (t / 0.7).clamp(0.0, 1.0);
+        final popT = ((t - 0.7) / 0.3).clamp(0.0, 1.0);
+
+        final baseRadius = 30.0;
+        final radius = isPopping
+            ? baseRadius * (1.0 + popT * 0.5)
+            : baseRadius * (0.3 + growT * 0.7);
+        final opacity = isPopping ? (1.0 - popT) : 1.0;
+
+        return SizedBox(
+          width: 120,
+          height: 120,
+          child: CustomPaint(
+            painter: _BubbleLoaderPainter(
+              radius: radius,
+              opacity: opacity,
+              popT: isPopping ? popT : 0.0,
+              color: AppColors.primary,
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _BubbleLoaderPainter extends CustomPainter {
+  final double radius, opacity, popT;
+  final Color color;
+
+  _BubbleLoaderPainter({
+    required this.radius,
+    required this.opacity,
+    required this.popT,
+    required this.color,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+
+    if (popT > 0) {
+      // Expanding ring
+      final ringPaint = Paint()
+        ..color = color.withOpacity(0.6 * opacity)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0 * (1.0 - popT);
+      canvas.drawCircle(center, radius, ringPaint);
+
+      // Particles
+      final particlePaint = Paint()
+        ..color = color.withOpacity(0.8 * opacity)
+        ..style = PaintingStyle.fill;
+      for (int i = 0; i < 6; i++) {
+        final angle = (i / 6) * 3.14159 * 2;
+        final dist = radius * (0.5 + popT * 2.0);
+        final px = center.dx + dist * (angle.cos());
+        final py = center.dy + dist * (angle.sin());
+        final pSize = 3.0 * (1.0 - popT);
+        canvas.drawCircle(Offset(px, py), pSize, particlePaint);
+      }
+    } else {
+      // Growing bubble
+      final fill = Paint()
+        ..color = color.withOpacity(0.3 * opacity)
+        ..style = PaintingStyle.fill;
+      canvas.drawCircle(center, radius, fill);
+
+      final ring = Paint()
+        ..color = color.withOpacity(0.7 * opacity)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5;
+      canvas.drawCircle(center, radius, ring);
+
+      // Highlight
+      final highlight = Paint()
+        ..color = Colors.white.withOpacity(0.4 * opacity)
+        ..style = PaintingStyle.fill;
+      canvas.drawCircle(
+        Offset(center.dx - radius * 0.3, center.dy - radius * 0.3),
+        radius * 0.2,
+        highlight,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _BubbleLoaderPainter old) =>
+      old.radius != radius || old.opacity != opacity || old.popT != popT;
+}
+
+extension _MathOnDouble on double {
+  double cos() => math.cos(this);
+  double sin() => math.sin(this);
 }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:heroicons/heroicons.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme.dart';
 
@@ -61,7 +62,7 @@ class _UpdatePasswordPageState extends State<UpdatePasswordPage> {
                 obscureText: true,
                 style: const TextStyle(color: Colors.white),
                 decoration: const InputDecoration(
-                  prefixIcon: Icon(Icons.lock, color: Colors.grey),
+                  prefixIcon: HeroIcon(HeroIcons.lockClosed, color: Colors.grey, style: HeroIconStyle.outline),
                   border: InputBorder.none,
                   labelText: "New Password",
                   labelStyle: TextStyle(color: Colors.grey),

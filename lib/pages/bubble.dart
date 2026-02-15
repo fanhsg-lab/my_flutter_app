@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:heroicons/heroicons.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme.dart';
 import '../local_db.dart';
@@ -385,10 +386,11 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
                               )
                             ],
                           ),
-                          child: const Icon(
-                            Icons.check_circle,
+                          child: const HeroIcon(
+                            HeroIcons.checkCircle,
                             color: AppColors.success,
                             size: 80,
+                            style: HeroIconStyle.solid,
                           ),
                         ),
                       );
@@ -453,7 +455,7 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
 
                   TextButton.icon(
                     onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.home_rounded, color: Colors.white70),
+                    icon: const HeroIcon(HeroIcons.home, color: Colors.white70, style: HeroIconStyle.solid),
                     label: Text(
                       S.mainMenu,
                       style: const TextStyle(color: Colors.white70, fontSize: 16),
@@ -508,8 +510,8 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
                child: Stack(
                  children: [
                     // Targets
-                    _buildTarget(Alignment.topCenter, Icons.check_circle, AppColors.success, isUp ? progress : 0.0),
-                    _buildTarget(Alignment.bottomCenter, Icons.cancel, Colors.redAccent, isDown ? progress : 0.0),
+                    _buildTarget(Alignment.topCenter, HeroIcons.checkCircle, AppColors.success, isUp ? progress : 0.0),
+                    _buildTarget(Alignment.bottomCenter, HeroIcons.xCircle, Colors.redAccent, isDown ? progress : 0.0),
                     
                     // Sound Button (Top Left)
                     Builder(
@@ -523,7 +525,7 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
                             backgroundColor: AppColors.primary,
                             elevation: 4,
                             onPressed: _speak,
-                            child: Icon(Icons.volume_up_rounded, color: Colors.black, size: r.iconSize(24)),
+                            child: HeroIcon(HeroIcons.speakerWave, color: Colors.black, size: r.iconSize(24), style: HeroIconStyle.solid),
                           ),
                         );
                       }
@@ -541,7 +543,7 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
                             backgroundColor: AppColors.cardColor,
                             elevation: 0,
                             onPressed: () => Navigator.pop(context),
-                            child: Icon(Icons.close, color: Colors.white, size: r.iconSize(24))
+                            child: HeroIcon(HeroIcons.xMark, color: Colors.white, size: r.iconSize(24), style: HeroIconStyle.outline)
                           )
                         );
                       }
@@ -576,7 +578,7 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
                     // Shifted up ~40px for optical center (eye perceives true center as too low)
                     Positioned.fill(
                       child: Align(
-                        alignment: const Alignment(0.0, -0.18),
+                        alignment: const Alignment(0.0, -0.25),
                       child: AnimatedBuilder(
                         animation: _shakeAnimation,
                         builder: (context, child) {
@@ -593,6 +595,7 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
                                   scale: _isDragging ? 1.08 : 1.0,
                                   child: Stack(
                                     alignment: Alignment.center,
+                                    clipBehavior: Clip.none,
                                     children: [
                                       // Circular progress indicator
                                       if (_isDragging && progress > 0)
@@ -652,10 +655,11 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
                                                 child: Row(
                                                   mainAxisSize: MainAxisSize.min,
                                                   children: [
-                                                    Icon(
-                                                      Icons.local_fire_department,
+                                                    HeroIcon(
+                                                      HeroIcons.fire,
                                                       color: Colors.orange,
                                                       size: r.iconSize(18),
+                                                      style: HeroIconStyle.solid,
                                                     ),
                                                     r.gapW(4),
                                                     Text(
@@ -797,7 +801,7 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
     );
   }
 
-  Widget _buildTarget(Alignment align, IconData icon, Color color, double opacity) {
+  Widget _buildTarget(Alignment align, HeroIcons icon, Color color, double opacity) {
     final r = Responsive(context);
     return Align(
       alignment: align,
@@ -825,16 +829,11 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
                   )
                 ],
               ),
-              child: Icon(
+              child: HeroIcon(
                 icon,
                 color: color,
                 size: r.iconSize(60),
-                shadows: [
-                  Shadow(
-                    color: color.withOpacity(0.5),
-                    blurRadius: 10,
-                  )
-                ],
+                style: HeroIconStyle.solid,
               ),
             ),
           ),
@@ -949,18 +948,20 @@ class BubbleBathBackground extends StatefulWidget {
   State<BubbleBathBackground> createState() => _BubbleBathBackgroundState();
 }
 
-class _BubbleBathBackgroundState extends State<BubbleBathBackground> with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  final List<_BackgroundBubble> _bubbles = [];
-  final math.Random _random = math.Random();
+class _BubbleBathBackgroundState extends State<BubbleBathBackground>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  final List<_FloatingBubble> _bubbles = [];
+  final math.Random _rng = math.Random();
+  int _spawnCounter = 0;
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(vsync: this, duration: const Duration(seconds: 60))..repeat();
-    for (int i = 0; i < 35; i++) { // More bubbles for density
-      _bubbles.add(_BackgroundBubble(_random));
-    }
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 16),
+    )..addListener(_tick)..repeat();
   }
 
   @override
@@ -969,94 +970,178 @@ class _BubbleBathBackgroundState extends State<BubbleBathBackground> with Single
     super.dispose();
   }
 
+  void _spawnBubble(Size size) {
+    final bubbleRadius = 8.0 + _rng.nextDouble() * 28;
+    _bubbles.add(_FloatingBubble(
+      x: _rng.nextDouble() * size.width,
+      y: size.height + bubbleRadius,
+      radius: bubbleRadius,
+      speed: 1.0 + _rng.nextDouble() * 1.5,
+      wobbleSpeed: 0.5 + _rng.nextDouble() * 1.5,
+      opacity: 0.15 + _rng.nextDouble() * 0.4,
+      color: _rng.nextBool()
+          ? AppColors.primary
+          : Color.lerp(AppColors.primary, AppColors.accent, _rng.nextDouble())!,
+      phase: _rng.nextDouble() * math.pi * 2,
+      popAt: 0.1 + _rng.nextDouble() * 0.5,
+      popped: false,
+      popProgress: 0.0,
+      birthTime: DateTime.now(),
+    ));
+  }
+
+  void _tick() {
+    if (!mounted) return;
+    final size = MediaQuery.of(context).size;
+    final now = DateTime.now();
+
+    // Spawn new bubbles periodically
+    _spawnCounter++;
+    if (_spawnCounter % 8 == 0 && _bubbles.length < 30) {
+      _spawnBubble(size);
+    }
+
+    // Seed initial bubbles
+    if (_bubbles.isEmpty) {
+      for (int i = 0; i < 15; i++) {
+        final b = _FloatingBubble(
+          x: _rng.nextDouble() * size.width,
+          y: _rng.nextDouble() * size.height,
+          radius: 8.0 + _rng.nextDouble() * 28,
+          speed: 1.0 + _rng.nextDouble() * 1.5,
+          wobbleSpeed: 0.5 + _rng.nextDouble() * 1.5,
+          opacity: 0.15 + _rng.nextDouble() * 0.4,
+          color: _rng.nextBool()
+              ? AppColors.primary
+              : Color.lerp(AppColors.primary, AppColors.accent, _rng.nextDouble())!,
+          phase: _rng.nextDouble() * math.pi * 2,
+          popAt: 0.1 + _rng.nextDouble() * 0.5,
+          popped: false,
+          popProgress: 0.0,
+          birthTime: now.subtract(Duration(milliseconds: _rng.nextInt(3000))),
+        );
+        _bubbles.add(b);
+      }
+    }
+
+    setState(() {
+      for (int i = _bubbles.length - 1; i >= 0; i--) {
+        final b = _bubbles[i];
+        final age = now.difference(b.birthTime).inMilliseconds / 1000.0;
+
+        if (b.popped) {
+          b.popProgress += 0.06;
+          if (b.popProgress >= 1.0) {
+            _bubbles.removeAt(i);
+            continue;
+          }
+        } else {
+          b.y -= b.speed;
+          b.x += math.sin(age * b.wobbleSpeed + b.phase) * 0.8;
+
+          if (b.y < size.height * b.popAt) {
+            b.popped = true;
+          }
+        }
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, child) {
-        return LayoutBuilder(
-          builder: (context, constraints) {
-            final height = constraints.maxHeight;
-            final width = constraints.maxWidth;
-            return Stack(
-              children: _bubbles.map((bubble) {
-                double movement = _controller.value * bubble.speed * height * 4;
-                double y = (bubble.startY - movement) % (height + 200);
-                if (y < -100) y = height + 100;
-
-                // Add gentle horizontal sway
-                final sway = math.sin(_controller.value * math.pi * 2 + bubble.startY) * 20;
-
-                return Positioned(
-                  left: bubble.xRatio * width + sway,
-                  top: y - 100,
-                  child: Opacity(
-                    opacity: bubble.opacity,
-                    child: Container(
-                      width: bubble.size,
-                      height: bubble.size,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: RadialGradient(
-                          colors: [
-                            bubble.color.withOpacity(0.15),
-                            bubble.color.withOpacity(0.05),
-                            Colors.transparent,
-                          ],
-                          stops: const [0.0, 0.5, 1.0],
-                        ),
-                        border: Border.all(
-                          color: bubble.color.withOpacity(0.2),
-                          width: 1.5,
-                        ),
-                        boxShadow: bubble.hasGlow
-                            ? [
-                                BoxShadow(
-                                  color: bubble.color.withOpacity(0.3),
-                                  blurRadius: 20,
-                                  spreadRadius: 5,
-                                )
-                              ]
-                            : null,
-                      ),
-                    ),
-                  ),
-                );
-              }).toList(),
-            );
-          },
-        );
-      },
+    return CustomPaint(
+      painter: _FloatingBubblePainter(_bubbles),
+      size: Size.infinite,
     );
   }
 }
 
-class _BackgroundBubble {
-  late double xRatio;
-  late double startY;
-  late double size;
-  late double speed;
-  late double opacity;
-  late bool hasGlow;
-  late Color color;
+class _FloatingBubble {
+  double x, y, radius, speed, wobbleSpeed, opacity;
+  double popAt, popProgress, phase;
+  Color color;
+  bool popped;
+  DateTime birthTime;
 
-  _BackgroundBubble(math.Random random) {
-    xRatio = random.nextDouble();
-    startY = random.nextDouble() * 2000;
-    size = random.nextDouble() * 60 + 15; // Larger range
-    speed = random.nextDouble() * 0.6 + 0.15; // Varied speeds
-    opacity = random.nextDouble() * 0.4 + 0.05; // Wider opacity range
-    hasGlow = random.nextDouble() > 0.7; // 30% chance of glow
+  _FloatingBubble({
+    required this.x,
+    required this.y,
+    required this.radius,
+    required this.speed,
+    required this.wobbleSpeed,
+    required this.opacity,
+    required this.color,
+    required this.phase,
+    required this.popAt,
+    required this.popped,
+    required this.popProgress,
+    required this.birthTime,
+  });
+}
 
-    // Varied colors
-    final colorChoices = [
-      Colors.white,
-      AppColors.primary,
-      const Color(0xFFFF9800), // Orange
-      const Color(0xFF00BCD4), // Cyan
-    ];
-    color = colorChoices[random.nextInt(colorChoices.length)];
+class _FloatingBubblePainter extends CustomPainter {
+  final List<_FloatingBubble> bubbles;
+  _FloatingBubblePainter(this.bubbles);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final b in bubbles) {
+      if (b.popped) {
+        _drawPop(canvas, b);
+      } else {
+        _drawBubble(canvas, b);
+      }
+    }
   }
+
+  void _drawBubble(Canvas canvas, _FloatingBubble b) {
+    final paint = Paint()
+      ..color = b.color.withOpacity(b.opacity * 0.3)
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(Offset(b.x, b.y), b.radius, paint);
+
+    final ringPaint = Paint()
+      ..color = b.color.withOpacity(b.opacity * 0.7)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+    canvas.drawCircle(Offset(b.x, b.y), b.radius, ringPaint);
+
+    final highlightPaint = Paint()
+      ..color = Colors.white.withOpacity(b.opacity * 0.4)
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(
+      Offset(b.x - b.radius * 0.3, b.y - b.radius * 0.3),
+      b.radius * 0.2,
+      highlightPaint,
+    );
+  }
+
+  void _drawPop(Canvas canvas, _FloatingBubble b) {
+    final t = b.popProgress;
+    final expandRadius = b.radius * (1.0 + t * 1.5);
+    final opacity = b.opacity * (1.0 - t);
+
+    final ringPaint = Paint()
+      ..color = b.color.withOpacity(opacity * 0.6)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0 * (1.0 - t);
+    canvas.drawCircle(Offset(b.x, b.y), expandRadius, ringPaint);
+
+    final particlePaint = Paint()
+      ..color = b.color.withOpacity(opacity * 0.8)
+      ..style = PaintingStyle.fill;
+    for (int i = 0; i < 6; i++) {
+      final angle = (i / 6) * math.pi * 2;
+      final dist = b.radius * (0.5 + t * 2.0);
+      final px = b.x + math.cos(angle) * dist;
+      final py = b.y + math.sin(angle) * dist;
+      final particleSize = (b.radius * 0.15) * (1.0 - t);
+      canvas.drawCircle(Offset(px, py), particleSize, particlePaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }
 
 class SparkleExplosion extends StatelessWidget {

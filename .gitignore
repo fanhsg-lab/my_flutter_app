@@ -2,6 +2,11 @@
 .env
 *.env.local
 
+# Android signing
+android/key.properties
+android/app/upload-keystore.jks
+*.jks
+
 # Miscellaneous
 *.class
 *.log

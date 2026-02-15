@@ -52,6 +52,11 @@ dependencies:
   permission_handler: ^11.3.0
   flutter_dotenv: ^5.1.0
   url_launcher: ^6.2.5
+  flutter_timezone: ^5.0.1
+  heroicons: ^0.11.0
+  google_fonts: ^8.0.1
+  visibility_detector: ^0.4.0+2
+  flutter_native_splash: ^2.4.4
 
 dev_dependencies:
   flutter_test:
@@ -116,12 +121,15 @@ flutter:
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
-  image_path: "assets/icons/ic_launcher_round.png"
+  image_path: "assets/icons/BullLogo.png"
   min_sdk_android: 21
-  # This makes the background White.
-  # Since your icon is a circle with white edges, it will blend in perfectly!
-  adaptive_icon_background: "#FFFFFF" 
-  adaptive_icon_foreground: "assets/icons/ic_launcher_round.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/icons/BullLogo.png"
+
+flutter_native_splash:
+  color: "#0A0A0A"
+  android_12:
+    color: "#0A0A0A"
 
 
 

@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:heroicons/heroicons.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:google_sign_in/google_sign_in.dart'; // <--- IMPORT THIS
-import '../theme.dart'; 
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import '../theme.dart';
 
 class RegisterPage extends StatefulWidget {
   const RegisterPage({super.key});
@@ -20,8 +22,7 @@ class _RegisterPageState extends State<RegisterPage> {
   Future<void> _googleSignUp() async {
     setState(() => _isLoading = true);
     try {
-      // ⚠️ PASTE THE SAME WEB CLIENT ID HERE ⚠️
-      const webClientId = '770793655312-gckugi27m6m1tn5n352lbk5nhjrribog.apps.googleusercontent.com';
+      final webClientId = dotenv.env['GOOGLE_WEB_CLIENT_ID']!;
 
       final GoogleSignIn googleSignIn = GoogleSignIn(
         serverClientId: webClientId,
@@ -114,11 +115,11 @@ class _RegisterPageState extends State<RegisterPage> {
                 
                 const SizedBox(height: 40),
                 
-                _buildTextField("Email", Icons.email_outlined, _emailController, false),
+                _buildTextField("Email", HeroIcons.envelope, _emailController, false),
                 const SizedBox(height: 20),
-                _buildTextField("Password", Icons.lock_outline, _passwordController, true),
+                _buildTextField("Password", HeroIcons.lockClosed, _passwordController, true),
                 const SizedBox(height: 20),
-                _buildTextField("Confirm Password", Icons.verified_user, _confirmPasswordController, true),
+                _buildTextField("Confirm Password", HeroIcons.shieldCheck, _confirmPasswordController, true),
                 
                 const SizedBox(height: 40),
                 
@@ -191,24 +192,26 @@ class _RegisterPageState extends State<RegisterPage> {
     );
   }
 
-  Widget _buildTextField(String label, IconData icon, TextEditingController controller, bool isPassword) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.cardColor,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white10),
-      ),
-      child: TextField(
-        controller: controller,
-        obscureText: isPassword,
-        style: const TextStyle(color: Colors.white),
-        cursorColor: AppColors.primary,
-        decoration: InputDecoration(
-          prefixIcon: Icon(icon, color: Colors.grey),
-          border: InputBorder.none,
-          labelText: label,
-          labelStyle: const TextStyle(color: Colors.grey),
-          contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+  Widget _buildTextField(String label, HeroIcons icon, TextEditingController controller, bool isPassword) {
+    return TextField(
+      controller: controller,
+      obscureText: isPassword,
+      style: const TextStyle(color: Colors.white),
+      cursorColor: AppColors.primary,
+      decoration: InputDecoration(
+        prefixIcon: HeroIcon(icon, color: Colors.grey, style: HeroIconStyle.outline),
+        filled: true,
+        fillColor: AppColors.cardColor,
+        labelText: label,
+        labelStyle: const TextStyle(color: Colors.grey),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+          borderSide: const BorderSide(color: Colors.white10),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+          borderSide: const BorderSide(color: AppColors.primary, width: 2),
         ),
       ),
     );

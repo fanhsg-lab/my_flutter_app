@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:heroicons/heroicons.dart';
 import 'dart:math' as math;
 import 'package:flutter/scheduler.dart';
 import 'dart:async';
@@ -726,10 +727,11 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
                                       child: Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          Icon(
-                                            Icons.bolt_rounded,
+                                          HeroIcon(
+                                            HeroIcons.bolt,
                                             color: Colors.white,
                                             size: r.iconSize(14),
+                                            style: HeroIconStyle.solid,
                                           ),
                                           Text(
                                             "x$_combo",
@@ -749,7 +751,7 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
                               // Close button
                               IconButton(
                                 onPressed: () => Navigator.of(context).pop(),
-                                icon: Icon(Icons.close_rounded, color: Colors.white, size: r.iconSize(28)),
+                                icon: HeroIcon(HeroIcons.xMark, color: Colors.white, size: r.iconSize(28), style: HeroIconStyle.outline),
                               ),
                             ],
                           ),
@@ -788,10 +790,11 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
                                       color: AppColors.error.withOpacity(0.2),
                                       border: Border.all(color: AppColors.error, width: r.scale(3)),
                                     ),
-                                    child: Icon(
-                                      Icons.close_rounded,
+                                    child: HeroIcon(
+                                      HeroIcons.xMark,
                                       color: AppColors.error,
                                       size: r.iconSize(60),
+                                      style: HeroIconStyle.outline,
                                     ),
                                   ),
                                   SizedBox(height: r.spacing(20)),
@@ -839,10 +842,11 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(
-                                  Icons.emoji_events_rounded,
+                                HeroIcon(
+                                  HeroIcons.trophy,
                                   color: Colors.white,
                                   size: r.iconSize(70),
+                                  style: HeroIconStyle.solid,
                                 ),
                                 SizedBox(height: r.spacing(16)),
                                 Text(

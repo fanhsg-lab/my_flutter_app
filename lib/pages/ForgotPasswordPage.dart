@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:heroicons/heroicons.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../theme.dart'; // Import your AppColors
+import '../theme.dart';
 import 'package:my_first_flutter_app/pages/ResetPasswordPage.dart';
 
 
@@ -71,7 +72,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
               
               const SizedBox(height: 40),
               
-              _buildTextField("Email Address", Icons.email_outlined, _emailController),
+              _buildTextField("Email Address", HeroIcons.envelope, _emailController),
               
               const SizedBox(height: 30),
               
@@ -97,7 +98,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     );
   }
 
-  Widget _buildTextField(String label, IconData icon, TextEditingController controller) {
+  Widget _buildTextField(String label, HeroIcons icon, TextEditingController controller) {
     return Container(
       decoration: BoxDecoration(
         color: AppColors.cardColor,
@@ -110,7 +111,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
         cursorColor: AppColors.primary,
         keyboardType: TextInputType.emailAddress,
         decoration: InputDecoration(
-          prefixIcon: Icon(icon, color: Colors.grey),
+          prefixIcon: HeroIcon(icon, color: Colors.grey, style: HeroIconStyle.outline),
           border: InputBorder.none,
           labelText: label,
           labelStyle: const TextStyle(color: Colors.grey),

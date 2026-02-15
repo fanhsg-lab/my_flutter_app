@@ -13,6 +13,7 @@ import 'package:my_first_flutter_app/pages/gameMode.dart';
 import 'package:my_first_flutter_app/pages/MainScreen.dart';
 import 'package:my_first_flutter_app/pages/LoginPage.dart';
 import 'package:my_first_flutter_app/pages/RegisterPage.dart';
+import 'package:my_first_flutter_app/pages/splash_screen.dart';
 // Note: Check if notification_service.dart is in 'lib/' or 'lib/pages/'
 import 'package:my_first_flutter_app/pages/notification_service.dart';
 import 'local_db.dart';
@@ -56,22 +57,24 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     S.setOnLocaleChanged(() {
       if (mounted) setState(() {});
     });
+    // 3. User opened the app — cancel old notifications, schedule new ones
+    NotificationService().onAppOpened();
   }
 
   @override
   void dispose() {
-    // 2. Stop watching when app is killed
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
-  // 3. THIS FUNCTION RUNS WHEN APP IS MINIMIZED/CLOSED
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
-      print("📱 App going to background... Scheduling Smart Reminder.");
-      // ✅ Calculate due words & Schedule Notification
-      NotificationService().scheduleSmartReminder();
+    if (state == AppLifecycleState.paused) {
+      // User minimized — schedule come-back reminder for 5h later
+      NotificationService().onAppMinimized();
+    } else if (state == AppLifecycleState.resumed) {
+      // User came back — cancel everything and reschedule
+      NotificationService().onAppOpened();
     }
   }
 
@@ -80,7 +83,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     return MaterialApp(
       key: ValueKey(S.locale),
       debugShowCheckedModeBanner: false,
-      title: 'Language App',
+      title: 'Palabra',
 
       // APPLY THE THEME HERE
       theme: appTheme,
@@ -96,23 +99,42 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   }
 }
 
-class AuthGate extends StatelessWidget {
+class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
 
   @override
+  State<AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<AuthGate> {
+  bool _splashDone = false;
+
+  @override
   Widget build(BuildContext context) {
+    if (!_splashDone) {
+      return SplashScreen(
+        onFinished: () => setState(() => _splashDone = true),
+      );
+    }
+
     return StreamBuilder<AuthState>(
       stream: Supabase.instance.client.auth.onAuthStateChange,
       builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
-        }
-        final session = snapshot.data?.session;
+        // Always check current session — avoids loading spinner flash
+        final session = snapshot.data?.session ??
+            Supabase.instance.client.auth.currentSession;
         if (session != null) {
           return const MainScreen();
-        } else {
+        }
+        // Only show login once the stream has actually emitted (no session)
+        if (snapshot.hasData) {
           return const LoginPage();
         }
+        // Still waiting for first stream event — use current session as tiebreaker
+        if (Supabase.instance.client.auth.currentSession != null) {
+          return const MainScreen();
+        }
+        return const LoginPage();
       },
     );
   }

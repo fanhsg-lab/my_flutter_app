@@ -2,11 +2,14 @@ import 'dart:math';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_heatmap_calendar/flutter_heatmap_calendar.dart';
+import 'package:heroicons/heroicons.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:visibility_detector/visibility_detector.dart';
 import 'stats_provider.dart';
 import '../responsive.dart';
 import '../services/app_strings.dart';
+import '../theme.dart';
 
 class StatsPage extends ConsumerStatefulWidget {
   const StatsPage({super.key});
@@ -18,15 +21,15 @@ class StatsPage extends ConsumerStatefulWidget {
 class _StatsPageState extends ConsumerState<StatsPage> {
   // 🔥 INTERACTIVE STATE (These are UI-only, so we keep them local)
   int _touchedIndex = -1;
-  DateTime? _selectedHeatmapDate; 
+  DateTime? _selectedHeatmapDate;
   int _selectedHeatmapScore = 0;
 
   // 🔥 THEME COLORS
-  final Color _cBlack = const Color(0xFF121212);     
-  final Color _cCard  = const Color(0xFF1E1E1E);     
-  final Color _cOrange = const Color(0xFFFF9800);    
-  final Color _cDarkOrange = const Color(0xFFE65100);
-  final Color _cGrey = const Color(0xFF424242);      
+  final Color _cBlack = AppColors.background;
+  final Color _cCard  = AppColors.cardColor;
+  final Color _cOrange = AppColors.primary;
+  final Color _cDarkOrange = const Color(0xFFC94E15);
+  final Color _cGrey = const Color(0xFF424242);
 
   @override
   Widget build(BuildContext context) {
@@ -51,14 +54,14 @@ class _StatsPageState extends ConsumerState<StatsPage> {
           final now = DateTime.now();
           final todayClean = DateTime(now.year, now.month, now.day);
           _selectedHeatmapDate ??= todayClean;
-          // Note: If the user clicked a date, we respect that. If not, we show today's score from the DB
           if (_selectedHeatmapScore == 0) {
              _selectedHeatmapScore = stats.heatmapData[todayClean] ?? 0;
           }
 
+          final filterKey = ref.watch(statsFilterProvider).name;
+
           return RefreshIndicator(
             onRefresh: () async {
-              // 🧠 3. PULL TO REFRESH
               return ref.refresh(statsProvider);
             },
             color: _cOrange,
@@ -80,19 +83,22 @@ class _StatsPageState extends ConsumerState<StatsPage> {
                   _buildFilterToggle(r),
                   SizedBox(height: r.spacing(20)),
 
-                  // 1. TOP SUMMARY ROW
-                  Row(
-                    children: [
-                       Expanded(child: _buildSummaryTile(S.words, totalActive.toString(), Icons.book, r)),
-                       SizedBox(width: r.spacing(12)),
-                       Expanded(child: _buildSummaryTile(S.retention, "${retention.toInt()}%", Icons.bolt, r)),
-                       SizedBox(width: r.spacing(12)),
-                       Expanded(child: _buildSummaryTile(S.days, stats.heatmapData.length.toString(), Icons.local_fire_department, r)),
-                    ],
+                  // 1. TOP SUMMARY ROW — animates when visible
+                  _AnimateOnVisible(
+                    sectionKey: 'summary-$filterKey',
+                    builder: (anim) => Row(
+                      children: [
+                         Expanded(child: _buildSummaryTile(S.words, totalActive.toString(), HeroIcons.bookOpen, r, anim)),
+                         SizedBox(width: r.spacing(12)),
+                         Expanded(child: _buildSummaryTile(S.retention, "${retention.toInt()}%", HeroIcons.bolt, r, anim)),
+                         SizedBox(width: r.spacing(12)),
+                         Expanded(child: _buildSummaryTile(S.days, stats.heatmapData.length.toString(), HeroIcons.fire, r, anim)),
+                      ],
+                    ),
                   ),
                   SizedBox(height: r.spacing(30)),
 
-                  // 2. KNOWLEDGE DONUT (Pass 'stats')
+                  // 2. KNOWLEDGE DONUT
                   _buildSectionTitle(S.progress, r),
                   _buildDarkCard(
                     r: r,
@@ -115,16 +121,19 @@ class _StatsPageState extends ConsumerState<StatsPage> {
                   ),
                   SizedBox(height: r.spacing(30)),
 
-                  // NEW: WEEKLY BREAKDOWN
+                  // 3. WEEKLY BREAKDOWN — animates when visible
                   _buildSectionTitle(S.thisWeek, r),
-                  _buildDarkCard(
-                    r: r,
-                    height: r.hp(22).clamp(160, 220),
-                    child: _buildWeeklySummary(stats, r),
+                  _AnimateOnVisible(
+                    sectionKey: 'weekly-$filterKey',
+                    builder: (anim) => _buildDarkCard(
+                      r: r,
+                      height: r.hp(22).clamp(160, 220),
+                      child: _buildWeeklySummary(stats, r, anim),
+                    ),
                   ),
                   SizedBox(height: r.spacing(30)),
 
-                  // 3. HISTORY CHART (Pass 'stats')
+                  // 4. HISTORY CHART
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -163,27 +172,33 @@ class _StatsPageState extends ConsumerState<StatsPage> {
                   ),
                   SizedBox(height: r.spacing(30)),
 
-                  // 4. FUTURE LOAD
+                  // 5. FORECAST — animates when visible
                   _buildSectionTitle(S.forecast, r),
-                  _buildDarkCard(
-                    r: r,
-                    height: r.chartHeight,
-                    padding: EdgeInsets.only(top: r.spacing(40), bottom: r.spacing(10), left: r.spacing(16), right: r.spacing(16)),
-                    child: _buildForecastBarChart(stats, r)
+                  _AnimateOnVisible(
+                    sectionKey: 'forecast-$filterKey',
+                    builder: (anim) => _buildDarkCard(
+                      r: r,
+                      height: r.chartHeight,
+                      padding: EdgeInsets.only(top: r.spacing(40), bottom: r.spacing(10), left: r.spacing(16), right: r.spacing(16)),
+                      child: _buildForecastBarChart(stats, r, anim),
+                    ),
                   ),
                   SizedBox(height: r.spacing(30)),
 
-                  // 5. MEMORY HEALTH
+                  // 6. MEMORY HEALTH — animates when visible
                   _buildSectionTitle(S.memoryStrength, r),
-                  _buildDarkCard(
-                    r: r,
-                    height: r.hp(35).clamp(250, 350),
-                    padding: EdgeInsets.only(top: r.spacing(40), bottom: r.spacing(20), left: r.spacing(16), right: r.spacing(16)),
-                    child: _buildFreshnessChart(stats, r)
+                  _AnimateOnVisible(
+                    sectionKey: 'memory-$filterKey',
+                    builder: (anim) => _buildDarkCard(
+                      r: r,
+                      height: r.hp(35).clamp(250, 350),
+                      padding: EdgeInsets.only(top: r.spacing(40), bottom: r.spacing(20), left: r.spacing(16), right: r.spacing(16)),
+                      child: _buildFreshnessChart(stats, r, anim),
+                    ),
                   ),
                   SizedBox(height: r.spacing(30)),
 
-                  // 6. HEATMAP
+                  // 7. HEATMAP
                   _buildSectionTitle(S.activity, r),
                   _buildDarkCard(
                     r: r,
@@ -245,21 +260,21 @@ class _StatsPageState extends ConsumerState<StatsPage> {
         children: [
           _buildFilterButton(
             label: S.thisBook,
-            icon: Icons.menu_book,
+            icon: HeroIcons.bookOpen,
             filter: StatsFilter.book,
             isSelected: currentFilter == StatsFilter.book,
             r: r,
           ),
           _buildFilterButton(
             label: S.thisTeacher,
-            icon: Icons.person,
+            icon: HeroIcons.user,
             filter: StatsFilter.teacher,
             isSelected: currentFilter == StatsFilter.teacher,
             r: r,
           ),
           _buildFilterButton(
             label: S.all,
-            icon: Icons.public,
+            icon: HeroIcons.globeAlt,
             filter: StatsFilter.all,
             isSelected: currentFilter == StatsFilter.all,
             r: r,
@@ -271,7 +286,7 @@ class _StatsPageState extends ConsumerState<StatsPage> {
 
   Widget _buildFilterButton({
     required String label,
-    required IconData icon,
+    required HeroIcons icon,
     required StatsFilter filter,
     required bool isSelected,
     required Responsive r,
@@ -289,10 +304,11 @@ class _StatsPageState extends ConsumerState<StatsPage> {
           ),
           child: Column(
             children: [
-              Icon(
+              HeroIcon(
                 icon,
                 color: isSelected ? _cOrange : Colors.grey,
                 size: r.iconSize(18),
+                style: HeroIconStyle.outline,
               ),
               SizedBox(height: r.spacing(4)),
               Text(
@@ -310,7 +326,16 @@ class _StatsPageState extends ConsumerState<StatsPage> {
     );
   }
 
-  Widget _buildSummaryTile(String label, String value, IconData icon, Responsive r) {
+  Widget _buildSummaryTile(String label, String value, HeroIcons icon, Responsive r, Animation<double> anim) {
+    // Animate number: extract digits and multiply by animation progress
+    final numMatch = RegExp(r'(\d+)').firstMatch(value);
+    String animValue = value;
+    if (numMatch != null) {
+      final num = int.parse(numMatch.group(1)!);
+      final animNum = (num * anim.value).round();
+      animValue = value.replaceFirst(numMatch.group(1)!, animNum.toString());
+    }
+
     return Container(
       padding: EdgeInsets.symmetric(vertical: r.spacing(16)),
       decoration: BoxDecoration(
@@ -320,9 +345,9 @@ class _StatsPageState extends ConsumerState<StatsPage> {
       ),
       child: Column(
         children: [
-          Icon(icon, color: _cOrange, size: r.iconSize(22)),
+          HeroIcon(icon, color: _cOrange, size: r.iconSize(22), style: HeroIconStyle.outline),
           SizedBox(height: r.spacing(8)),
-          Text(value, style: TextStyle(fontSize: r.fontSize(20), fontWeight: FontWeight.bold, color: Colors.white)),
+          Text(animValue, style: TextStyle(fontSize: r.fontSize(20), fontWeight: FontWeight.bold, color: Colors.white)),
           SizedBox(height: r.spacing(4)),
           Text(label, style: TextStyle(fontSize: r.fontSize(10), fontWeight: FontWeight.bold, color: Colors.white.withOpacity(0.5))),
         ],
@@ -526,7 +551,7 @@ class _StatsPageState extends ConsumerState<StatsPage> {
     );
   }
 
-  Widget _buildFreshnessChart(UserStats stats, Responsive r) {
+  Widget _buildFreshnessChart(UserStats stats, Responsive r, Animation<double> anim) {
     int maxVal = max(stats.fresh, max(stats.fading, stats.dormant));
     if (maxVal == 0) maxVal = 10;
 
@@ -574,15 +599,15 @@ class _StatsPageState extends ConsumerState<StatsPage> {
         gridData: const FlGridData(show: false),
         borderData: FlBorderData(show: false),
         barGroups: [
-          _buildBar(0, stats.fresh, _cOrange, r),
-          _buildBar(1, stats.fading, _cDarkOrange, r),
-          _buildBar(2, stats.dormant, Colors.redAccent, r),
+          _buildBar(0, stats.fresh, _cOrange, r, anim),
+          _buildBar(1, stats.fading, _cDarkOrange, r, anim),
+          _buildBar(2, stats.dormant, Colors.redAccent, r, anim),
         ],
       ),
     );
   }
 
-  Widget _buildForecastBarChart(UserStats stats, Responsive r) {
+  Widget _buildForecastBarChart(UserStats stats, Responsive r, Animation<double> anim) {
     final labels = S.forecastLabels;
     int maxVal = stats.forecast.reduce(max);
     if(maxVal == 0) maxVal = 5;
@@ -633,7 +658,7 @@ class _StatsPageState extends ConsumerState<StatsPage> {
             showingTooltipIndicators: entry.value > 0 ? [0] : [],
             barRods: [
               BarChartRodData(
-                toY: entry.value.toDouble(),
+                toY: entry.value.toDouble() * anim.value,
                 color: barColor,
                 width: r.scale(14),
                 borderRadius: BorderRadius.circular(r.radius(2)),
@@ -646,13 +671,13 @@ class _StatsPageState extends ConsumerState<StatsPage> {
     );
   }
 
-  BarChartGroupData _buildBar(int x, int value, Color color, Responsive r) {
+  BarChartGroupData _buildBar(int x, int value, Color color, Responsive r, Animation<double> anim) {
     return BarChartGroupData(
       x: x,
       showingTooltipIndicators: value > 0 ? [0] : [],
       barRods: [
         BarChartRodData(
-          toY: value.toDouble(),
+          toY: value.toDouble() * anim.value,
           color: color,
           width: r.scale(25),
           borderRadius: BorderRadius.vertical(top: Radius.circular(r.radius(4))),
@@ -715,7 +740,7 @@ class _StatsPageState extends ConsumerState<StatsPage> {
     );
   }
 
-  Widget _buildWeeklySummary(UserStats stats, Responsive r) {
+  Widget _buildWeeklySummary(UserStats stats, Responsive r, Animation<double> anim) {
     // Rolling last-7-days window (today is the rightmost bar)
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
@@ -760,7 +785,7 @@ class _StatsPageState extends ConsumerState<StatsPage> {
                     children: [
                       // Bar
                       Container(
-                        height: r.scale(50) * heightPercent,
+                        height: r.scale(50) * heightPercent * anim.value,
                         decoration: BoxDecoration(
                           gradient: LinearGradient(
                             begin: Alignment.bottomCenter,
@@ -795,11 +820,11 @@ class _StatsPageState extends ConsumerState<StatsPage> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           children: [
-            _buildMiniStat("$weeklyWords", S.total, r),
+            _buildMiniStat("${(weeklyWords * anim.value).round()}", S.total, r),
             Container(width: 1, height: r.scale(20), color: Colors.white10),
-            _buildMiniStat("$activeDays/7", S.days, r),
+            _buildMiniStat("${(activeDays * anim.value).round()}/7", S.days, r),
             Container(width: 1, height: r.scale(20), color: Colors.white10),
-            _buildMiniStat("$dailyAvg", S.avgDay, r),
+            _buildMiniStat("${(dailyAvg * anim.value).round()}", S.avgDay, r),
           ],
         ),
       ],
@@ -813,6 +838,57 @@ class _StatsPageState extends ConsumerState<StatsPage> {
         SizedBox(height: r.spacing(2)),
         Text(label, style: TextStyle(color: Colors.white38, fontSize: r.fontSize(9), fontWeight: FontWeight.bold)),
       ],
+    );
+  }
+}
+
+/// A wrapper that animates its child when scrolled into view.
+/// Each section gets its own animation that triggers independently.
+class _AnimateOnVisible extends StatefulWidget {
+  final String sectionKey;
+  final Widget Function(Animation<double> animation) builder;
+
+  const _AnimateOnVisible({
+    required this.sectionKey,
+    required this.builder,
+  });
+
+  @override
+  State<_AnimateOnVisible> createState() => _AnimateOnVisibleState();
+}
+
+class _AnimateOnVisibleState extends State<_AnimateOnVisible>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1400),
+  );
+  late final Animation<double> _anim = CurvedAnimation(
+    parent: _controller,
+    curve: Curves.easeOutCubic,
+  );
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onVisibility(VisibilityInfo info) {
+    if (info.visibleFraction > 0.55 && !_controller.isAnimating && _controller.value == 0) {
+      _controller.forward();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return VisibilityDetector(
+      key: Key('anim-${widget.sectionKey}'),
+      onVisibilityChanged: _onVisibility,
+      child: AnimatedBuilder(
+        animation: _anim,
+        builder: (context, _) => widget.builder(_anim),
+      ),
     );
   }
 }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:heroicons/heroicons.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme.dart';
 
@@ -65,11 +66,11 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
             const SizedBox(height: 20),
             
             // Token Field
-            _buildTextField("6-Digit Code", Icons.numbers, _tokenController),
+            _buildTextField("6-Digit Code", HeroIcons.hashtag, _tokenController),
             const SizedBox(height: 15),
-            
+
             // New Password Field
-            _buildTextField("New Password", Icons.lock, _passwordController, isPassword: true),
+            _buildTextField("New Password", HeroIcons.lockClosed, _passwordController, isPassword: true),
             
             const SizedBox(height: 30),
             SizedBox(
@@ -87,7 +88,7 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
     );
   }
 
-  Widget _buildTextField(String label, IconData icon, TextEditingController c, {bool isPassword = false}) {
+  Widget _buildTextField(String label, HeroIcons icon, TextEditingController c, {bool isPassword = false}) {
     return Container(
       decoration: BoxDecoration(color: AppColors.cardColor, borderRadius: BorderRadius.circular(12)),
       child: TextField(
@@ -95,7 +96,7 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
         obscureText: isPassword,
         style: const TextStyle(color: Colors.white),
         decoration: InputDecoration(
-          prefixIcon: Icon(icon, color: Colors.grey),
+          prefixIcon: HeroIcon(icon, color: Colors.grey, style: HeroIconStyle.outline),
           border: InputBorder.none,
           labelText: label,
           labelStyle: const TextStyle(color: Colors.grey),

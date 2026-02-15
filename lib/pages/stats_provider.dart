@@ -41,7 +41,7 @@ class UserStats {
 }
 
 // 2. THE TRIGGER
-final dbUpdateTrigger = StreamProvider<bool>((ref) async* {
+final dbUpdateTrigger = StreamProvider<int>((ref) async* {
   yield LocalDB.instance.onDatabaseChanged.value;
   await for (final _ in _notifierToStream(LocalDB.instance.onDatabaseChanged)) {
     yield LocalDB.instance.onDatabaseChanged.value;

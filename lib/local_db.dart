@@ -8,10 +8,10 @@ import 'package:flutter/foundation.dart';
 class LocalDB {
   static final LocalDB instance = LocalDB._init();
   static Database? _database;
-  final ValueNotifier<bool> onDatabaseChanged = ValueNotifier(false);
+  final ValueNotifier<int> onDatabaseChanged = ValueNotifier(0);
 
   void notifyDataChanged() {
-    onDatabaseChanged.value = !onDatabaseChanged.value;
+    onDatabaseChanged.value++;
   }
 
   LocalDB._init();
@@ -27,7 +27,7 @@ class LocalDB {
     final path = join(dbPath, filePath);
     return await openDatabase(
       path,
-      version: 6,  // Version 6 adds lesson_words junction table
+      version: 7,  // Version 7 adds total_lessons to books
       onCreate: _createDB,
       onUpgrade: _upgradeDB,
       onOpen: _onOpen,
@@ -53,7 +53,8 @@ class LocalDB {
         title TEXT NOT NULL,
         level TEXT,
         teacher_id INTEGER,
-        source_language TEXT DEFAULT 'es'
+        source_language TEXT DEFAULT 'es',
+        total_lessons INTEGER DEFAULT 0
       )
     ''');
 
@@ -315,6 +316,16 @@ class LocalDB {
       }
       debugPrint("✅ Migration to v6 complete!");
     }
+
+    if (oldVersion < 7) {
+      debugPrint("🔧 Migrating database to v7 (adding total_lessons to books)");
+      try {
+        await db.execute('ALTER TABLE books ADD COLUMN total_lessons INTEGER DEFAULT 0');
+        debugPrint("   ✅ Added total_lessons column to books");
+      } catch (e) {
+        debugPrint("   ⚠️ Error during v7 migration: $e");
+      }
+    }
   }
 
   Future<void> _onOpen(Database db) async {
@@ -374,9 +385,7 @@ class LocalDB {
         debugPrint("⚠️ Push failed (will continue with pull): $e");
       }
 
-      // 3. DOWNLOAD GLOBAL CONTENT (only if server version changed)
-      //    Reads a single row from 'app_settings' in Supabase. Bump 'content_version'
-      //    there whenever you add/change lessons or words.
+      // 3. DOWNLOAD GLOBAL CONTENT (only when content_version changes in Supabase)
       int remoteVersion = 0;
       try {
         final versionRes = await supabase
@@ -395,28 +404,43 @@ class LocalDB {
       ) ?? 0;
       final hasLocalContent = (Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM lesson_words')) ?? 0) > 0;
 
-      if (remoteVersion > localVersion || !hasLocalContent) {
-        debugPrint("📥 Content sync needed (local v$localVersion → remote v$remoteVersion, hasContent: $hasLocalContent)");
+      // Also re-pull if the selected teacher changed (lessons are teacher-scoped)
+      final lastSyncedTeacher = (await db.query('app_meta', where: 'key = ?', whereArgs: ['last_synced_teacher']));
+      final lastTeacherId = lastSyncedTeacher.isNotEmpty ? lastSyncedTeacher.first['value']?.toString() : null;
+      final currentTeacherId = (await getCurrentTeacherId())?.toString();
+      final teacherChanged = currentTeacherId != null && currentTeacherId != lastTeacherId;
+
+      if (remoteVersion > localVersion || !hasLocalContent || teacherChanged) {
+        debugPrint("📥 Content sync needed (local v$localVersion → remote v$remoteVersion, hasContent: $hasLocalContent, teacherChanged: $teacherChanged)");
         await _pullContent(db, supabase);
         await db.insert('app_meta',
           {'key': 'content_version', 'value': remoteVersion.toString()},
           conflictAlgorithm: ConflictAlgorithm.replace,
         );
+        if (currentTeacherId != null) {
+          await db.insert('app_meta',
+            {'key': 'last_synced_teacher', 'value': currentTeacherId},
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
 
         // 3.5 CLEAN UP orphaned progress (word_ids that no longer exist after dedup)
-        final orphaned = await db.rawQuery('''
-          SELECT up.word_id FROM user_progress up
-          LEFT JOIN words w ON w.id = up.word_id
-          WHERE w.id IS NULL AND up.user_id = ?
-        ''', [userId]);
-        if (orphaned.isNotEmpty) {
-          final orphanIds = orphaned.map((r) => r['word_id']).toList();
-          debugPrint("🧹 Cleaning ${orphanIds.length} orphaned progress records");
-          final placeholders = orphanIds.map((_) => '?').join(',');
-          await db.rawDelete(
-            'DELETE FROM user_progress WHERE word_id IN ($placeholders) AND user_id = ?',
-            [...orphanIds, userId],
-          );
+        // Only run on version change, NOT on teacher switch (teacher switch just changes local scope)
+        if (!teacherChanged) {
+          final orphaned = await db.rawQuery('''
+            SELECT up.word_id FROM user_progress up
+            LEFT JOIN words w ON w.id = up.word_id
+            WHERE w.id IS NULL AND up.user_id = ?
+          ''', [userId]);
+          if (orphaned.isNotEmpty) {
+            final orphanIds = orphaned.map((r) => r['word_id']).toList();
+            debugPrint("🧹 Cleaning ${orphanIds.length} orphaned progress records");
+            final placeholders = orphanIds.map((_) => '?').join(',');
+            await db.rawDelete(
+              'DELETE FROM user_progress WHERE word_id IN ($placeholders) AND user_id = ?',
+              [...orphanIds, userId],
+            );
+          }
         }
       } else {
         debugPrint("⏭️ Content up to date (v$localVersion), skipping content pull");
@@ -503,16 +527,21 @@ class LocalDB {
   /// Aggregates local attempt_logs into daily summaries and syncs to daily_stats
   Future<void> _aggregateAndSyncDailyStats(Database db, SupabaseClient supabase, String userId) async {
     try {
-      // Get all unsynced logs grouped by date
+      // Find dates that have unsynced logs, then aggregate ALL logs for those dates
+      // (so if user plays twice in one day, the upsert has the full day's totals)
       final unsyncedLogs = await db.rawQuery('''
         SELECT
           DATE(attempted_at) as date,
           COUNT(*) as total_attempts,
-          SUM(CASE WHEN correct = 1 THEN 1 ELSE 0 END) as correct_attempts
+          COUNT(DISTINCT word_id) as total_words,
+          SUM(CASE WHEN correct = 1 THEN 1 ELSE 0 END) as correct_count,
+          SUM(CASE WHEN correct = 0 THEN 1 ELSE 0 END) as wrong_count
         FROM attempt_logs
-        WHERE user_id = ? AND synced = 0
+        WHERE user_id = ? AND DATE(attempted_at) IN (
+          SELECT DISTINCT DATE(attempted_at) FROM attempt_logs WHERE user_id = ? AND synced = 0
+        )
         GROUP BY DATE(attempted_at)
-      ''', [userId]);
+      ''', [userId, userId]);
 
       if (unsyncedLogs.isEmpty) {
         debugPrint("📊 No new daily stats to sync");
@@ -521,32 +550,16 @@ class LocalDB {
 
       debugPrint("📊 Aggregating ${unsyncedLogs.length} days of activity into daily_stats...");
 
-      // For each day, calculate learned vs reviewing counts
       List<Map<String, dynamic>> dailyStatsPayload = [];
 
       for (var dayLog in unsyncedLogs) {
-        final date = dayLog['date'] as String;
-
-        // Get word status breakdown for this day
-        final statsForDay = await db.rawQuery('''
-          SELECT
-            SUM(CASE WHEN up.status IN ('consolidating', 'learned') THEN 1 ELSE 0 END) as learned_count,
-            SUM(CASE WHEN up.status = 'learning' THEN 1 ELSE 0 END) as reviewing_count,
-            COUNT(DISTINCT al.word_id) as total_words
-          FROM attempt_logs al
-          LEFT JOIN user_progress up ON al.word_id = up.word_id AND al.user_id = up.user_id
-          WHERE al.user_id = ? AND DATE(al.attempted_at) = ?
-        ''', [userId, date]);
-
-        final stats = statsForDay.first;
-
         dailyStatsPayload.add({
           'user_id': userId,
-          'date': date,
-          'total_words': stats['total_words'] ?? 0,  // Cumulative snapshot
-          'learned_count': stats['learned_count'] ?? 0,  // Cumulative snapshot
-          'reviewing_count': stats['reviewing_count'] ?? 0,  // Cumulative snapshot
-          'attempts_sum': dayLog['total_attempts'] ?? 0,  // Daily activity count
+          'date': dayLog['date'],
+          'total_words': dayLog['total_words'] ?? 0,
+          'learned_count': dayLog['correct_count'] ?? 0,
+          'reviewing_count': dayLog['wrong_count'] ?? 0,
+          'attempts_sum': dayLog['total_attempts'] ?? 0,
         });
       }
 
@@ -606,7 +619,7 @@ class LocalDB {
 
       // 2. Download ALL books (small, needed for selector UI)
       debugPrint("📥 Downloading books...");
-      final cloudBooks = await supabase.from('books').select();
+      final cloudBooks = await supabase.from('books').select('*, lessons(count)');
       debugPrint("   Found ${cloudBooks.length} books in cloud");
       for (var b in cloudBooks) {
         debugPrint("   📖 Book: id=${b['id']} title=${b['title']} teacher_id=${b['teacher_id']}");
@@ -614,12 +627,16 @@ class LocalDB {
 
       final bookBatch = db.batch();
       for (var b in cloudBooks) {
+        final lessonCount = (b['lessons'] is List && (b['lessons'] as List).isNotEmpty)
+            ? (b['lessons'] as List).first['count'] as int? ?? 0
+            : 0;
         bookBatch.insert('books', {
           'id': b['id'],
           'title': b['title'],
           'level': b['level'],
           'teacher_id': b['teacher_id'],
           'source_language': b['source_language'] ?? 'es',
+          'total_lessons': lessonCount,
         }, conflictAlgorithm: ConflictAlgorithm.replace);
       }
       debugPrint("   Committing books batch...");
@@ -628,7 +645,22 @@ class LocalDB {
 
       // 3. Determine scope: current teacher's books only
       debugPrint("📥 Step 3: Getting current teacher...");
-      final currentTeacherId = await getCurrentTeacherId();
+      var currentTeacherId = await getCurrentTeacherId();
+
+      // Auto-select first teacher if none selected (first install)
+      if (currentTeacherId == null && cloudTeachers.isNotEmpty) {
+        currentTeacherId = cloudTeachers.first['id'] as int;
+        await setCurrentTeacherId(currentTeacherId);
+        // Also auto-select first book for this teacher
+        final firstTeacherBooks = cloudBooks
+            .where((b) => b['teacher_id'] == currentTeacherId)
+            .toList();
+        if (firstTeacherBooks.isNotEmpty) {
+          await setCurrentBookId(firstTeacherBooks.first['id'] as int);
+        }
+        debugPrint("👨‍🏫 Auto-selected teacher $currentTeacherId on first install");
+      }
+
       debugPrint("   current_teacher_id = $currentTeacherId");
       List<int> bookIds = [];
 
@@ -812,19 +844,28 @@ class LocalDB {
 
   Future<void> _pullProgress(Database db, SupabaseClient supabase, String userId) async {
     try {
-      final remoteProgress = await supabase
-        .from('user_word_progress')
-        .select()
-        .eq('user_id', userId);
+      // Download with pagination (Supabase default limit is 1000)
+      List<dynamic> remoteProgress = [];
+      int pageStart = 0;
+      const int pageLimit = 1000;
+      bool more = true;
+
+      while (more) {
+        final page = await supabase
+          .from('user_word_progress')
+          .select()
+          .eq('user_id', userId)
+          .range(pageStart, pageStart + pageLimit - 1);
+        remoteProgress.addAll(page);
+        if (page.length < pageLimit) {
+          more = false;
+        } else {
+          pageStart += pageLimit;
+        }
+      }
 
       if (remoteProgress.isNotEmpty) {
         debugPrint("📥 Downloading ${remoteProgress.length} progress records");
-        // DEBUG: Log non-new statuses to see what Supabase sends
-        for (var p in remoteProgress) {
-          if (p['word_id'] == 1008 || (p['status'] != null && p['status'] != 'new')) {
-            debugPrint("   🔍 PULL word_id=${p['word_id']} status=${p['status']} attempts=${p['total_attempts']} correct=${p['total_correct']}");
-          }
-        }
         final batch = db.batch();
         final List<Map<String, dynamic>> needsStatusFix = [];
         for (var p in remoteProgress) {
@@ -834,7 +875,6 @@ class LocalDB {
           // Auto-correct: status='new' but has attempts means data is inconsistent
           if (status == 'new' && attempts > 0) {
             status = 'learning';
-            debugPrint("   🔧 AUTO-FIX word_id=${p['word_id']}: status was 'new' with $attempts attempts → set to 'learning'");
             needsStatusFix.add({
               'user_id': userId,
               'word_id': p['word_id'],
@@ -871,12 +911,6 @@ class LocalDB {
             onConflict: 'user_id, word_id'
           );
         }
-
-        // DEBUG: Verify what was actually saved locally for word 1008
-        final check1008 = await db.query('user_progress',
-          where: 'word_id = ? AND user_id = ?',
-          whereArgs: [1008, userId]);
-        debugPrint("   🔍 LOCAL user_progress for word 1008: $check1008");
       }
     } catch (e) {
       debugPrint("❌ Progress pull error: $e");
@@ -914,6 +948,9 @@ class LocalDB {
           UNIQUE(user_id, date)
         )
       ''');
+
+      // Clear local daily_stats for this user so deleted cloud rows don't linger
+      await db.delete('daily_stats', where: 'user_id = ?', whereArgs: [userId]);
 
       final batch = db.batch();
       for (var stat in cloudDailyStats) {
@@ -981,6 +1018,60 @@ class LocalDB {
     } catch (e) {
       debugPrint("❌ Failed to save progress: $e");
       rethrow;
+    }
+  }
+
+  /// Get current streak count (for notifications)
+  Future<int> getStreakCount() async {
+    try {
+      final db = await instance.database;
+      final userId = Supabase.instance.client.auth.currentUser?.id;
+      if (userId == null) return 0;
+
+      final result = await db.query(
+        'daily_stats',
+        columns: ['date'],
+        where: 'user_id = ? AND attempts_sum > 0',
+        whereArgs: [userId],
+        orderBy: 'date DESC',
+      );
+      if (result.isEmpty) return 0;
+
+      List<String> sortedDates = result.map((r) => r['date'] as String).toList();
+      DateTime now = DateTime.now();
+      String todayStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+      DateTime yest = now.subtract(const Duration(days: 1));
+      String yesterdayStr = "${yest.year}-${yest.month.toString().padLeft(2, '0')}-${yest.day.toString().padLeft(2, '0')}";
+
+      String lastPlayed = sortedDates.first;
+      int streak = 0;
+      String? nextDateToFind;
+
+      if (lastPlayed == todayStr) {
+        streak = 1;
+        nextDateToFind = yesterdayStr;
+      } else if (lastPlayed == yesterdayStr) {
+        streak = 1;
+        DateTime dby = now.subtract(const Duration(days: 2));
+        nextDateToFind = "${dby.year}-${dby.month.toString().padLeft(2, '0')}-${dby.day.toString().padLeft(2, '0')}";
+      } else {
+        return 0;
+      }
+
+      if (streak > 0) {
+        for (int i = 1; i < sortedDates.length; i++) {
+          if (sortedDates[i] == nextDateToFind) {
+            streak++;
+            DateTime prev = DateTime.parse(nextDateToFind!).subtract(const Duration(days: 1));
+            nextDateToFind = "${prev.year}-${prev.month.toString().padLeft(2, '0')}-${prev.day.toString().padLeft(2, '0')}";
+          } else {
+            break;
+          }
+        }
+      }
+      return streak;
+    } catch (e) {
+      return 0;
     }
   }
 
@@ -1115,11 +1206,6 @@ class LocalDB {
         final stats = lessonStats[lessonId]!;
         String status = row['status'] as String? ?? 'new';
         String? nextDueStr = row['next_due_at'] as String?;
-
-        // DEBUG: Log word 1008 and any non-new words
-        if (wordId == 1008 || status != 'new') {
-          debugPrint("   🔍 DASHBOARD lesson=$lessonId word=$wordId status=$status nextDue=$nextDueStr");
-        }
 
         // Calculate learned/learning/unseen
         if (status == 'new') {
@@ -1385,22 +1471,25 @@ class LocalDB {
           b.level,
           b.teacher_id,
           b.source_language,
+          b.total_lessons,
           COUNT(l.id) as lesson_count
         FROM books b
         LEFT JOIN lessons l ON l.book_id = b.id
         $whereClause
-        GROUP BY b.id, b.title, b.level, b.teacher_id, b.source_language
+        GROUP BY b.id, b.title, b.level, b.teacher_id, b.source_language, b.total_lessons
         ORDER BY b.id ASC
       ''', whereArgs);
 
       List<BookData> books = [];
       for (var row in booksQuery) {
+        final localCount = row['lesson_count'] as int;
+        final cloudCount = row['total_lessons'] as int? ?? 0;
         books.add(BookData(
           id: row['id'] as int,
           title: row['title'] as String,
           level: row['level'] as String?,
           teacherId: row['teacher_id'] as int?,
-          lessonCount: row['lesson_count'] as int,
+          lessonCount: localCount > 0 ? localCount : cloudCount,
           sourceLanguage: (row['source_language'] as String?) ?? 'es',
         ));
       }
