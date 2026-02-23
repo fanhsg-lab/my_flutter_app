@@ -41,6 +41,8 @@ class S {
   // ========================
   static String get beginnerCourse => _t('beginnerCourse');
   static String get noLessonsFound => _t('noLessonsFound');
+  static String get selectBook => _t('selectBook');
+  static String get tapToSelectBook => _t('tapToSelectBook');
   static String get quickStats => _t('quickStats');
   static String get dayStreak => _t('dayStreak');
   static String get wordsLearned => _t('wordsLearned');
@@ -94,6 +96,8 @@ class S {
   static String get helpCenter => _t('helpCenter');
   static String get contactDeveloper => _t('contactDeveloper');
   static String get contactMessage => _t('contactMessage');
+  static String get howItWorks => _t('howItWorks');
+  static String get howItWorksSubtitle => _t('howItWorksSubtitle');
   static String get sendEmail => _t('sendEmail');
   static String get couldNotOpenEmail => _t('couldNotOpenEmail');
   static String get feedbackHint => _t('feedbackHint');
@@ -127,6 +131,12 @@ class S {
   static String get slippingMo => _t('slippingMo');
   static String get lostMo => _t('lostMo');
   static String get notEnoughData => _t('notEnoughData');
+  static String get infoProgress => _t('infoProgress');
+  static String get infoThisWeek => _t('infoThisWeek');
+  static String get infoVelocity => _t('infoVelocity');
+  static String get infoForecast => _t('infoForecast');
+  static String get infoMemoryStrength => _t('infoMemoryStrength');
+  static String get infoActivity => _t('infoActivity');
   static String get masteredUpper => _t('masteredUpper');
   static String get learningUpper => _t('learningUpper');
   static String get newUpper => _t('newUpper');
@@ -205,6 +215,30 @@ class S {
   }
 
   // ========================
+  // SUBSCRIPTION
+  // ========================
+  static String get subscription => _t('subscription');
+  static String get palabraPremium => _t('palabraPremium');
+  static String get freeTrialDaysLeft => _t('freeTrialDaysLeft');
+  static String get daysLeft => _t('daysLeft');
+  static String get trialExpired => _t('trialExpired');
+  static String get unlockLearning => _t('unlockLearning');
+  static String get monthly => _t('monthly');
+  static String get yearly => _t('yearly');
+  static String get perMonth => _t('perMonth');
+  static String get perYear => _t('perYear');
+  static String get save33 => _t('save33');
+  static String get subscribe => _t('subscribe');
+  static String get restorePurchases => _t('restorePurchases');
+  static String get manageSub => _t('manageSub');
+  static String get renewsOn => _t('renewsOn');
+  static String get expiresOn => _t('expiresOn');
+  static String get active => _t('active');
+  static String get startFreeTrial => _t('startFreeTrial');
+  static String get expired => _t('expired');
+  static String trialDaysN(int n) => '$n ${_t('daysLeft')}';
+
+  // ========================
   // GAME MODE
   // ========================
   static String get left => _t('left');
@@ -239,6 +273,8 @@ class S {
     // Main Screen
     'beginnerCourse': 'Beginner Course',
     'noLessonsFound': 'No Lessons Found',
+    'selectBook': 'Select a Book',
+    'tapToSelectBook': 'Tap to choose your book',
     'quickStats': '🔥 Quick Stats',
     'dayStreak': 'Day Streak',
     'wordsLearned': 'Words Learned',
@@ -288,6 +324,8 @@ class S {
     'helpCenter': 'Help Center',
     'contactDeveloper': 'Contact Developer',
     'contactMessage': 'Have a question or found a bug? Send us an email!',
+    'howItWorks': 'How It Works',
+    'howItWorksSubtitle': 'Colors, stats, test mode & more',
     'sendEmail': 'SEND EMAIL',
     'couldNotOpenEmail': 'Could not open email client',
     'feedbackHint': 'Write your feedback here...',
@@ -315,10 +353,16 @@ class S {
     'total': 'TOTAL',
     'avgDay': 'AVG/DAY',
     'today': 'Today',
-    'recentWk': 'RECENT\n< 1 wk',
-    'slippingMo': 'SLIPPING\n< 1 mo',
-    'lostMo': 'LOST\n> 1 mo',
+    'recentWk': 'THIS WEEK\n< 7 days',
+    'slippingMo': 'THIS MONTH\n< 30 days',
+    'lostMo': 'MONTH+\n> 30 days',
     'notEnoughData': 'Not enough data yet.',
+    'infoProgress': 'Shows how your words are split between Mastered, Learning, and New. Tap any section of the donut to see the exact count for that category.',
+    'infoThisWeek': 'Words you practiced over the last 7 days. Today\'s bar is highlighted in orange. Below you\'ll see your weekly total, active days, and daily average.',
+    'infoVelocity': 'Orange line → total words mastered over time\nDark orange line → words currently in learning\n\nA rising orange line means your vocabulary is growing. If both lines are flat, try studying more consistently to see progress.',
+    'infoForecast': 'Shows how many words are due for review each day over the next 7 days.\n\nLate (red bar) → overdue words — do these first!\n\nSmaller upcoming bars mean a lighter load. Staying consistent keeps this graph balanced.',
+    'infoMemoryStrength': 'Groups your studied words by how recently they were last reviewed:\n\nRed → reviewed this week (freshest)\nDark orange → reviewed this month\nOrange → last reviewed over a month ago\n\nWords on the right are the most deeply memorized. Keep reviewing to build long-term memory.',
+    'infoActivity': 'Your daily study activity over the last 2 months. Darker orange means more words practiced that day. Tap any day to see the exact count.',
     'masteredUpper': 'MASTERED',
     'learningUpper': 'LEARNING',
     'newUpper': 'NEW',
@@ -357,6 +401,27 @@ class S {
     'greek': 'Greek',
     'wordsLower': 'words',
 
+    // Subscription
+    'subscription': 'Subscription',
+    'palabraPremium': 'Palabra Premium',
+    'freeTrialDaysLeft': 'Free trial',
+    'daysLeft': 'days left',
+    'trialExpired': 'Your free trial has ended',
+    'unlockLearning': 'Subscribe to continue learning',
+    'monthly': 'Monthly',
+    'yearly': 'Yearly',
+    'perMonth': '/month',
+    'perYear': '/year',
+    'save33': 'Save 33%',
+    'subscribe': 'SUBSCRIBE',
+    'restorePurchases': 'Restore Purchases',
+    'manageSub': 'Manage Subscription',
+    'renewsOn': 'Renews on',
+    'expiresOn': 'Expires on',
+    'active': 'Active',
+    'startFreeTrial': 'Start with a 2-month free trial!',
+    'expired': 'Expired',
+
     // Game Mode
     'left': 'LEFT',
     'pts': 'PTS',
@@ -376,6 +441,8 @@ class S {
     // Main Screen
     'beginnerCourse': 'Μάθημα Αρχαρίων',
     'noLessonsFound': 'Δεν Βρέθηκαν Μαθήματα',
+    'selectBook': 'Επιλέξτε Βιβλίο',
+    'tapToSelectBook': 'Πατήστε για να επιλέξετε βιβλίο',
     'quickStats': '🔥 Στατιστικά',
     'dayStreak': 'Ημερήσιο Σερί',
     'wordsLearned': 'Λέξεις',
@@ -425,6 +492,8 @@ class S {
     'helpCenter': 'Κέντρο Βοήθειας',
     'contactDeveloper': 'Επικοινωνία με τον Δημιουργό',
     'contactMessage': 'Έχεις ερώτηση ή βρήκες πρόβλημα; Στείλε μας email!',
+    'howItWorks': 'Πώς Λειτουργεί',
+    'howItWorksSubtitle': 'Χρώματα, στατιστικά, λειτουργία τεστ & άλλα',
     'sendEmail': 'ΑΠΟΣΤΟΛΗ EMAIL',
     'couldNotOpenEmail': 'Δεν ήταν δυνατό το άνοιγμα email',
     'feedbackHint': 'Γράψε το σχόλιό σου εδώ...',
@@ -452,10 +521,16 @@ class S {
     'total': 'ΣΥΝΟΛΟ',
     'avgDay': 'ΜΕΣ/ΗΜΕΡΑ',
     'today': 'Σήμερα',
-    'recentWk': 'ΠΡΟΣΦΑΤΑ\n< 1 εβδ',
-    'slippingMo': 'ΦΘΙΝΟΥΣΑ\n< 1 μην',
-    'lostMo': 'ΧΑΜΕΝΑ\n> 1 μην',
+    'recentWk': 'ΕΒΔΟΜΑΔΑ\n< 7 μέρες',
+    'slippingMo': 'ΜΗΝΑΣ\n< 30 μέρες',
+    'lostMo': 'ΜΗΝΑΣ+\n> 30 μέρες',
     'notEnoughData': 'Δεν υπάρχουν αρκετά δεδομένα.',
+    'infoProgress': 'Δείχνει πώς κατανέμονται οι λέξεις σου σε Κατακτημένες, Εκμάθηση και Νέες. Πάτα σε τμήμα του γραφήματος για να δεις τον ακριβή αριθμό.',
+    'infoThisWeek': 'Λέξεις που εξάσκησες τις τελευταίες 7 μέρες. Η σημερινή μπάρα είναι πορτοκαλί. Παρακάτω βλέπεις σύνολο, ενεργές μέρες και ημερήσιο μέσο όρο.',
+    'infoVelocity': 'Πορτοκαλί γραμμή → λέξεις που κατέκτησες συνολικά\nΣκούρο πορτοκαλί → λέξεις που μαθαίνεις τώρα\n\nΑνερχόμενη πορτοκαλί γραμμή σημαίνει ότι το λεξιλόγιό σου μεγαλώνει. Αν είναι επίπεδη, εξάσκησε πιο συχνά.',
+    'infoForecast': 'Δείχνει πόσες λέξεις είναι προγραμματισμένες για επανάληψη τις επόμενες 7 μέρες.\n\nΚαθυστ. (κόκκινο) → καθυστερημένες — κάνε τις πρώτα!\n\nΜικρότερες μπάρες μπροστά = ελαφρύτερο φορτίο. Η συνέπεια κρατά τον πίνακα ισορροπημένο.',
+    'infoMemoryStrength': 'Ομαδοποιεί τις λέξεις βάσει πότε τις επανέλαβες τελευταία:\n\nΚόκκινο → αυτή την εβδομάδα (φρέσκια μνήμη)\nΣκούρο πορτοκαλί → αυτό τον μήνα\nΠορτοκαλί → πάνω από ένα μήνα\n\nΟι λέξεις στα δεξιά είναι οι πιο βαθιά αποθηκευμένες. Συνέχισε τις επαναλήψεις!',
+    'infoActivity': 'Η ημερήσια σου δραστηριότητα τους τελευταίους 2 μήνες. Πιο σκούρο πορτοκαλί = περισσότερες λέξεις εκείνη τη μέρα. Πάτα μια μέρα για λεπτομέρειες.',
     'masteredUpper': 'ΚΑΤΑΚΤΗΜΕΝΕΣ',
     'learningUpper': 'ΕΚΜΑΘΗΣΗ',
     'newUpper': 'ΝΕΕΣ',
@@ -493,6 +568,27 @@ class S {
     'english': 'Αγγλικά',
     'greek': 'Ελληνικά',
     'wordsLower': 'λέξεις',
+
+    // Subscription
+    'subscription': 'Συνδρομή',
+    'palabraPremium': 'Palabra Premium',
+    'freeTrialDaysLeft': 'Δωρεάν δοκιμή',
+    'daysLeft': 'μέρες απομένουν',
+    'trialExpired': 'Η δωρεάν δοκιμή έληξε',
+    'unlockLearning': 'Εγγραφείτε για να συνεχίσετε',
+    'monthly': 'Μηνιαία',
+    'yearly': 'Ετήσια',
+    'perMonth': '/μήνα',
+    'perYear': '/έτος',
+    'save33': 'Εξοικονόμηση 33%',
+    'subscribe': 'ΕΓΓΡΑΦΗ',
+    'restorePurchases': 'Επαναφορά Αγορών',
+    'manageSub': 'Διαχείριση Συνδρομής',
+    'renewsOn': 'Ανανεώνεται στις',
+    'expiresOn': 'Λήγει στις',
+    'active': 'Ενεργή',
+    'startFreeTrial': 'Ξεκίνα με 2 μήνες δωρεάν!',
+    'expired': 'Έληξε',
 
     // Game Mode
     'left': 'ΑΠΟΜΕΝΟΥΝ',

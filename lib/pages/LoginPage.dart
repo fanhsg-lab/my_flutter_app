@@ -217,7 +217,14 @@ class _LoginPageState extends State<LoginPage> {
                       child: const Text("Register", style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold)),
                     ),
                   ],
-                )
+                ),
+                const SizedBox(height: 12),
+                Center(
+                  child: Text(
+                    "Start with a 2-month free trial!",
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                  ),
+                ),
               ],
             ),
           ),

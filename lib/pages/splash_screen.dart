@@ -7,114 +7,124 @@ class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key, required this.onFinished});
 
   @override
-  State<SplashScreen> createState() => _SplashScreenState();
+  State<SplashScreen> createState() => SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen>
+class SplashScreenState extends State<SplashScreen>
     with TickerProviderStateMixin {
   final math.Random _rng = math.Random();
   final List<_Bubble> _bubbles = [];
+  Size _screenSize = Size.zero;
+  double _lastTick = 0; // seconds since epoch
 
-  late final AnimationController _bubbleController = AnimationController(
+  // Drives repaints — no setState needed
+  late final AnimationController _tickController = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 16), // tick driver
-  );
+    duration: const Duration(seconds: 1),
+  )..repeat();
 
   late final AnimationController _fadeOutController = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 500),
+    duration: const Duration(milliseconds: 400),
   );
 
   bool _disposed = false;
+  bool _fadingOut = false;
 
   @override
   void initState() {
     super.initState();
+    _lastTick = DateTime.now().millisecondsSinceEpoch / 1000.0;
+    _tickController.addListener(_updateBubbles);
     _startAnimation();
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _screenSize = MediaQuery.of(context).size;
+  }
+
   Future<void> _startAnimation() async {
-    // Spawn bubbles over time
-    _bubbleController.addListener(_tickBubbles);
-    _bubbleController.repeat();
-
-    // Spawn initial wave of bubbles
-    for (int i = 0; i < 12; i++) {
-      Future.delayed(Duration(milliseconds: i * 80), () {
-        if (!_disposed) _spawnBubble();
-      });
-    }
-
-    // Keep spawning bubbles
-    for (int i = 0; i < 8; i++) {
-      Future.delayed(Duration(milliseconds: 1000 + i * 150), () {
-        if (!_disposed) _spawnBubble();
-      });
-    }
-
-    // Fade out and finish
-    await Future.delayed(const Duration(milliseconds: 2800));
+    await Future.delayed(const Duration(milliseconds: 50));
     if (_disposed) return;
-    _fadeOutController.forward().then((_) {
-      if (!_disposed) widget.onFinished();
-    });
+
+    for (int i = 0; i < 6; i++) {
+      Future.delayed(Duration(milliseconds: i * 120), () {
+        if (!_disposed) _spawnBubble();
+      });
+    }
+
+    _continuousSpawn();
+
+    await Future.delayed(const Duration(milliseconds: 4000));
+    if (_disposed) return;
+    widget.onFinished();
+  }
+
+  void _continuousSpawn() async {
+    while (!_disposed && !_fadingOut) {
+      await Future.delayed(Duration(milliseconds: 400 + _rng.nextInt(300)));
+      if (!_disposed && !_fadingOut) _spawnBubble();
+    }
+  }
+
+  Future<void> fadeOut() {
+    if (_fadingOut) return Future.value();
+    _fadingOut = true;
+    return _fadeOutController.forward().orCancel.catchError((_) {});
   }
 
   void _spawnBubble() {
-    if (!mounted) return;
-    final size = MediaQuery.of(context).size;
-    final bubbleRadius = 8.0 + _rng.nextDouble() * 28;
+    final s = _screenSize;
+    if (s == Size.zero) return;
+    final bubbleRadius = 10.0 + _rng.nextDouble() * 24;
     _bubbles.add(_Bubble(
-      x: _rng.nextDouble() * size.width,
-      y: size.height + bubbleRadius,
+      startX: _rng.nextDouble() * s.width,
+      y: s.height + bubbleRadius,
       radius: bubbleRadius,
-      speed: 3.0 + _rng.nextDouble() * 4.0,
-      wobbleSpeed: 0.5 + _rng.nextDouble() * 1.5,
-      wobbleAmount: 10.0 + _rng.nextDouble() * 20,
-      opacity: 0.15 + _rng.nextDouble() * 0.4,
+      speed: 80.0 + _rng.nextDouble() * 100.0, // pixels per second
+      wobbleSpeed: 0.5 + _rng.nextDouble() * 1.0,
+      opacity: 0.15 + _rng.nextDouble() * 0.35,
       color: _rng.nextBool()
           ? AppColors.primary
           : Color.lerp(AppColors.primary, AppColors.accent, _rng.nextDouble())!,
       phase: _rng.nextDouble() * math.pi * 2,
-      popAt: 0.15 + _rng.nextDouble() * 0.5, // pop when reaching this fraction of screen height
-      popped: false,
-      popProgress: 0.0,
-      birthTime: DateTime.now(),
+      popAt: 0.15 + _rng.nextDouble() * 0.5,
+      birthTime: DateTime.now().millisecondsSinceEpoch / 1000.0,
     ));
   }
 
-  void _tickBubbles() {
-    if (!mounted) return;
-    final size = MediaQuery.of(context).size;
-    final now = DateTime.now();
-    setState(() {
-      for (int i = _bubbles.length - 1; i >= 0; i--) {
-        final b = _bubbles[i];
-        final age = now.difference(b.birthTime).inMilliseconds / 1000.0;
+  // Time-based updates: if frames are dropped, bubbles jump to correct position
+  void _updateBubbles() {
+    final s = _screenSize;
+    if (s == Size.zero) return;
+    final now = DateTime.now().millisecondsSinceEpoch / 1000.0;
+    final dt = (now - _lastTick).clamp(0.0, 0.1); // cap at 100ms to avoid huge jumps
+    _lastTick = now;
 
-        if (b.popped) {
-          b.popProgress += 0.06;
-          if (b.popProgress >= 1.0) {
-            _bubbles.removeAt(i);
-            continue;
-          }
-        } else {
-          b.y -= b.speed;
-          b.x += math.sin(age * b.wobbleSpeed + b.phase) * 0.8;
-
-          // Pop when reaching target height
-          if (b.y < size.height * b.popAt) {
-            b.popped = true;
-          }
+    for (int i = _bubbles.length - 1; i >= 0; i--) {
+      final b = _bubbles[i];
+      if (b.popped) {
+        b.popProgress += dt * 5.0; // ~0.08 per frame at 60fps
+        if (b.popProgress >= 1.0) {
+          _bubbles.removeAt(i);
+        }
+      } else {
+        final age = now - b.birthTime;
+        b.y -= b.speed * dt;
+        b.x = b.startX + math.sin(age * b.wobbleSpeed + b.phase) * 20.0;
+        if (b.y < s.height * b.popAt) {
+          b.popped = true;
         }
       }
-    });
+    }
   }
 
   @override
   void dispose() {
     _disposed = true;
-    _bubbleController.dispose();
+    _tickController.dispose();
     _fadeOutController.dispose();
     super.dispose();
   }
@@ -129,14 +139,11 @@ class _SplashScreenState extends State<SplashScreen>
       ),
       child: Scaffold(
         backgroundColor: AppColors.background,
-        body: Stack(
-          children: [
-            // Bubbles layer
-            CustomPaint(
-              painter: _BubblePainter(_bubbles),
-              size: Size.infinite,
-            ),
-          ],
+        body: RepaintBoundary(
+          child: CustomPaint(
+            painter: _BubblePainter(_bubbles, _tickController),
+            size: Size.infinite,
+          ),
         ),
       ),
     );
@@ -144,92 +151,65 @@ class _SplashScreenState extends State<SplashScreen>
 }
 
 class _Bubble {
-  double x, y, radius, speed, wobbleSpeed, wobbleAmount, opacity;
+  double startX; // original X for wobble calculation
+  double x, y, radius, speed, wobbleSpeed, opacity;
   double popAt, popProgress, phase;
+  double birthTime;
   Color color;
   bool popped;
-  DateTime birthTime;
 
   _Bubble({
-    required this.x,
+    required this.startX,
     required this.y,
     required this.radius,
     required this.speed,
     required this.wobbleSpeed,
-    required this.wobbleAmount,
     required this.opacity,
     required this.color,
     required this.phase,
     required this.popAt,
-    required this.popped,
-    required this.popProgress,
     required this.birthTime,
-  });
+  })  : x = startX,
+        popped = false,
+        popProgress = 0.0;
 }
 
 class _BubblePainter extends CustomPainter {
   final List<_Bubble> bubbles;
-  _BubblePainter(this.bubbles);
+  _BubblePainter(this.bubbles, Animation<double> repaint) : super(repaint: repaint);
 
   @override
   void paint(Canvas canvas, Size size) {
     for (final b in bubbles) {
       if (b.popped) {
-        _drawPop(canvas, b);
+        final t = b.popProgress;
+        final expandRadius = b.radius * (1.0 + t * 1.2);
+        final ringPaint = Paint()
+          ..color = b.color.withOpacity(b.opacity * (1.0 - t) * 0.5)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5 * (1.0 - t);
+        canvas.drawCircle(Offset(b.x, b.y), expandRadius, ringPaint);
       } else {
-        _drawBubble(canvas, b);
+        final paint = Paint()
+          ..color = b.color.withOpacity(b.opacity * 0.3)
+          ..style = PaintingStyle.fill;
+        canvas.drawCircle(Offset(b.x, b.y), b.radius, paint);
+
+        final ringPaint = Paint()
+          ..color = b.color.withOpacity(b.opacity * 0.7)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5;
+        canvas.drawCircle(Offset(b.x, b.y), b.radius, ringPaint);
+
+        final hlPaint = Paint()
+          ..color = Colors.white.withOpacity(b.opacity * 0.3)
+          ..style = PaintingStyle.fill;
+        canvas.drawCircle(
+          Offset(b.x - b.radius * 0.3, b.y - b.radius * 0.3),
+          b.radius * 0.18,
+          hlPaint,
+        );
       }
-    }
-  }
-
-  void _drawBubble(Canvas canvas, _Bubble b) {
-    // Filled circle with glow
-    final paint = Paint()
-      ..color = b.color.withOpacity(b.opacity * 0.3)
-      ..style = PaintingStyle.fill;
-    canvas.drawCircle(Offset(b.x, b.y), b.radius, paint);
-
-    // Ring
-    final ringPaint = Paint()
-      ..color = b.color.withOpacity(b.opacity * 0.7)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5;
-    canvas.drawCircle(Offset(b.x, b.y), b.radius, ringPaint);
-
-    // Highlight
-    final highlightPaint = Paint()
-      ..color = Colors.white.withOpacity(b.opacity * 0.4)
-      ..style = PaintingStyle.fill;
-    canvas.drawCircle(
-      Offset(b.x - b.radius * 0.3, b.y - b.radius * 0.3),
-      b.radius * 0.2,
-      highlightPaint,
-    );
-  }
-
-  void _drawPop(Canvas canvas, _Bubble b) {
-    final t = b.popProgress;
-    final expandRadius = b.radius * (1.0 + t * 1.5);
-    final opacity = b.opacity * (1.0 - t);
-
-    // Expanding ring
-    final ringPaint = Paint()
-      ..color = b.color.withOpacity(opacity * 0.6)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0 * (1.0 - t);
-    canvas.drawCircle(Offset(b.x, b.y), expandRadius, ringPaint);
-
-    // Small particles flying out
-    final particlePaint = Paint()
-      ..color = b.color.withOpacity(opacity * 0.8)
-      ..style = PaintingStyle.fill;
-    for (int i = 0; i < 6; i++) {
-      final angle = (i / 6) * math.pi * 2;
-      final dist = b.radius * (0.5 + t * 2.0);
-      final px = b.x + math.cos(angle) * dist;
-      final py = b.y + math.sin(angle) * dist;
-      final particleSize = (b.radius * 0.15) * (1.0 - t);
-      canvas.drawCircle(Offset(px, py), particleSize, particlePaint);
     }
   }
 

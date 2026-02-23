@@ -16,7 +16,6 @@ import 'package:my_first_flutter_app/pages/RegisterPage.dart';
 import 'package:my_first_flutter_app/pages/splash_screen.dart';
 // Note: Check if notification_service.dart is in 'lib/' or 'lib/pages/'
 import 'package:my_first_flutter_app/pages/notification_service.dart';
-import 'local_db.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -34,7 +33,6 @@ Future<void> main() async {
   await NotificationService().init();
   // ✅ LOAD SAVED LANGUAGE
   await S.load();
-  LocalDB.instance.syncEverything();
   runApp(const ProviderScope(child: MyApp()));
 }
 
@@ -108,34 +106,79 @@ class AuthGate extends StatefulWidget {
 
 class _AuthGateState extends State<AuthGate> {
   bool _splashDone = false;
+  bool _splashAnimDone = false;
+  bool _mainScreenReady = false;
+  bool _showingMainScreen = false;
+  bool _allowBuildContent = false; // defer heavy widget tree
+  final _splashKey = GlobalKey<SplashScreenState>();
+
+  @override
+  void initState() {
+    super.initState();
+    // Let bubbles animate for 3s before building MainScreen widget tree
+    Future.delayed(const Duration(milliseconds: 3000), () {
+      if (mounted) setState(() => _allowBuildContent = true);
+    });
+  }
+
+  void _tryFadeOut() {
+    if (_splashDone || !mounted) return;
+    if (_splashAnimDone && (_mainScreenReady || !_showingMainScreen)) {
+      _splashKey.currentState?.fadeOut().then((_) {
+        if (mounted) setState(() => _splashDone = true);
+      });
+    }
+  }
+
+  void _onMainScreenReady() {
+    _mainScreenReady = true;
+    _tryFadeOut();
+  }
+
+  void _onSplashAnimDone() {
+    _splashAnimDone = true;
+    _tryFadeOut();
+  }
 
   @override
   Widget build(BuildContext context) {
-    if (!_splashDone) {
-      return SplashScreen(
-        onFinished: () => setState(() => _splashDone = true),
-      );
-    }
+    return Stack(
+      children: [
+        // Defer building heavy content until bubbles have had smooth time
+        if (_allowBuildContent)
+          StreamBuilder<AuthState>(
+            stream: Supabase.instance.client.auth.onAuthStateChange,
+            builder: (context, snapshot) {
+              final session = snapshot.data?.session ??
+                  Supabase.instance.client.auth.currentSession;
+              if (session != null) {
+                _showingMainScreen = true;
+                return MainScreen(onReady: _onMainScreenReady);
+              }
+              if (snapshot.hasData) {
+                _showingMainScreen = false;
+                WidgetsBinding.instance.addPostFrameCallback((_) => _tryFadeOut());
+                return const LoginPage();
+              }
+              if (Supabase.instance.client.auth.currentSession != null) {
+                _showingMainScreen = true;
+                return MainScreen(onReady: _onMainScreenReady);
+              }
+              _showingMainScreen = false;
+              WidgetsBinding.instance.addPostFrameCallback((_) => _tryFadeOut());
+              return const LoginPage();
+            },
+          )
+        else
+          const SizedBox.expand(), // lightweight placeholder
 
-    return StreamBuilder<AuthState>(
-      stream: Supabase.instance.client.auth.onAuthStateChange,
-      builder: (context, snapshot) {
-        // Always check current session — avoids loading spinner flash
-        final session = snapshot.data?.session ??
-            Supabase.instance.client.auth.currentSession;
-        if (session != null) {
-          return const MainScreen();
-        }
-        // Only show login once the stream has actually emitted (no session)
-        if (snapshot.hasData) {
-          return const LoginPage();
-        }
-        // Still waiting for first stream event — use current session as tiebreaker
-        if (Supabase.instance.client.auth.currentSession != null) {
-          return const MainScreen();
-        }
-        return const LoginPage();
-      },
+        // Splash on top — fades out to reveal ready content
+        if (!_splashDone)
+          SplashScreen(
+            key: _splashKey,
+            onFinished: _onSplashAnimDone,
+          ),
+      ],
     );
   }
 }

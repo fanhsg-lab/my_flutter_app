@@ -138,31 +138,29 @@ final statsProvider = FutureProvider<UserStats>((ref) async {
   }
 
   int lrn = 0, lrd = 0;
-  int fresh = 0, fading = 0, dormant = 0;
+  // Memory strength: how far out words are due (further = stronger memory)
+  int dueThisWeek = 0, dueThisMonth = 0, dueAfterMonth = 0;
   List<int> forecast = List.filled(7, 0);
 
   for (var row in allWords) {
     String status = row['status'] as String;
 
     if (status == 'learning') lrn++;
-    else if (status == 'consolidating' || status == 'learned') {
-      lrd++;
-      if (row['last_reviewed'] != null) {
-        final lastReview = DateTime.parse(row['last_reviewed'] as String).toLocal();
-        final diff = now.difference(lastReview).inDays;
-        if (diff <= 7) fresh++;
-        else if (diff <= 30) fading++;
-        else dormant++;
-      }
-    }
+    else if (status == 'consolidating' || status == 'learned') lrd++;
 
-    if (row['next_due_at'] != null) {
+    if (row['next_due_at'] != null && status != 'new') {
       DateTime due = DateTime.parse(row['next_due_at'] as String).toLocal();
       DateTime dueMidnight = DateTime(due.year, due.month, due.day);
       int diffDays = dueMidnight.difference(todayMidnight).inDays;
 
+      // Forecast (next 7 days breakdown)
       if (diffDays < 0) forecast[0]++;
       else if (diffDays < 7) forecast[diffDays]++;
+
+      // Memory strength buckets (overdue counts as "this week")
+      if (diffDays <= 7) dueThisWeek++;
+      else if (diffDays <= 30) dueThisMonth++;
+      else dueAfterMonth++;
     }
   }
 
@@ -234,9 +232,9 @@ final statsProvider = FutureProvider<UserStats>((ref) async {
     learning: lrn,
     mastered: lrd,
     newWords: n,
-    fresh: fresh,
-    fading: fading,
-    dormant: dormant,
+    fresh: dueThisWeek,
+    fading: dueThisMonth,
+    dormant: dueAfterMonth,
     forecast: forecast,
     learnedSpots: tempLearned,
     learningSpots: tempLearning,

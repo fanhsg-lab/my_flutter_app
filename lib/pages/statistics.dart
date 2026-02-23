@@ -24,6 +24,9 @@ class _StatsPageState extends ConsumerState<StatsPage> {
   DateTime? _selectedHeatmapDate;
   int _selectedHeatmapScore = 0;
 
+  // Cache previous stats so we don't show loading spinner on filter change
+  UserStats? _lastStats;
+
   // 🔥 THEME COLORS
   final Color _cBlack = AppColors.background;
   final Color _cCard  = AppColors.cardColor;
@@ -37,18 +40,23 @@ class _StatsPageState extends ConsumerState<StatsPage> {
     // 🧠 1. LISTEN TO THE BRAIN
     final statsAsync = ref.watch(statsProvider);
 
+    // Cache latest successful data
+    final stats = statsAsync.whenOrNull(data: (s) => s) ?? _lastStats;
+    if (statsAsync.hasValue) _lastStats = statsAsync.value;
+
     return Scaffold(
       backgroundColor: _cBlack,
       // 🧠 2. HANDLE STATES (Loading / Error / Data)
       body: SafeArea(
-        child: statsAsync.when(
-        loading: () => Center(child: CircularProgressIndicator(color: _cOrange)),
-        error: (err, stack) => Center(child: Text("${S.error}: $err", style: TextStyle(color: Colors.red, fontSize: r.fontSize(14)))),
-        data: (stats) {
+        child: stats == null
+        ? Center(child: CircularProgressIndicator(color: _cOrange))
+        : statsAsync.hasError && _lastStats == null
+        ? Center(child: Text("${S.error}: ${statsAsync.error}", style: TextStyle(color: Colors.red, fontSize: r.fontSize(14))))
+        : Builder(builder: (context) {
 
           // Calculate Totals for Summary
           int totalActive = stats.learning + stats.mastered;
-          double retention = totalActive == 0 ? 0 : (stats.fresh / totalActive) * 100;
+          double retention = totalActive == 0 ? 0 : (stats.dormant / totalActive) * 100;
 
           // Default heatmap date to today if not selected
           final now = DateTime.now();
@@ -138,16 +146,27 @@ class _StatsPageState extends ConsumerState<StatsPage> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       _buildSectionTitle(S.velocity, r),
-                      Padding(
-                        padding: EdgeInsets.only(bottom: r.spacing(10)),
-                        child: Text(
-                          S.lastNDays(stats.dateLabels.length),
-                          style: TextStyle(
-                            color: Colors.white.withOpacity(0.3),
-                            fontWeight: FontWeight.bold,
-                            fontSize: r.fontSize(10)
-                          )
-                        ),
+                      Row(
+                        children: [
+                          Padding(
+                            padding: EdgeInsets.only(bottom: r.spacing(10)),
+                            child: Text(
+                              S.lastNDays(stats.dateLabels.length),
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(0.3),
+                                fontWeight: FontWeight.bold,
+                                fontSize: r.fontSize(10),
+                              ),
+                            ),
+                          ),
+                          GestureDetector(
+                            onTap: () => _showInfoSheet(S.velocity, _velocityInfo()),
+                            child: Padding(
+                              padding: EdgeInsets.only(left: r.spacing(6), bottom: r.spacing(10)),
+                              child: HeroIcon(HeroIcons.informationCircle, color: _cOrange, size: r.iconSize(18), style: HeroIconStyle.outline),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -173,7 +192,7 @@ class _StatsPageState extends ConsumerState<StatsPage> {
                   SizedBox(height: r.spacing(30)),
 
                   // 5. FORECAST — animates when visible
-                  _buildSectionTitle(S.forecast, r),
+                  _buildSectionTitle(S.forecast, r, infoContent: _forecastInfo()),
                   _AnimateOnVisible(
                     sectionKey: 'forecast-$filterKey',
                     builder: (anim) => _buildDarkCard(
@@ -186,7 +205,7 @@ class _StatsPageState extends ConsumerState<StatsPage> {
                   SizedBox(height: r.spacing(30)),
 
                   // 6. MEMORY HEALTH — animates when visible
-                  _buildSectionTitle(S.memoryStrength, r),
+                  _buildSectionTitle(S.memoryStrength, r, infoContent: _memoryInfo()),
                   _AnimateOnVisible(
                     sectionKey: 'memory-$filterKey',
                     builder: (anim) => _buildDarkCard(
@@ -216,22 +235,157 @@ class _StatsPageState extends ConsumerState<StatsPage> {
               ),
             ),
           );
-        },
-      ),
+        }),
       ),
     );
   }
 
   // ================= UI WIDGETS =================
 
-  Widget _buildSectionTitle(String title, Responsive r) {
+  Widget _buildSectionTitle(String title, Responsive r, {Widget? infoContent}) {
     return Padding(
       padding: EdgeInsets.only(left: r.spacing(4), bottom: r.spacing(10)),
-      child: Text(
-        title,
-        style: TextStyle(fontSize: r.fontSize(14), fontWeight: FontWeight.bold, color: _cOrange, letterSpacing: 2.0)
-      )
+      child: Row(
+        children: [
+          Text(
+            title,
+            style: TextStyle(fontSize: r.fontSize(14), fontWeight: FontWeight.bold, color: _cOrange, letterSpacing: 2.0),
+          ),
+          if (infoContent != null) ...[
+            const Spacer(),
+            GestureDetector(
+              onTap: () => _showInfoSheet(title, infoContent),
+              child: Padding(
+                padding: EdgeInsets.only(right: r.spacing(4)),
+                child: HeroIcon(HeroIcons.informationCircle, color: _cOrange, size: r.iconSize(18), style: HeroIconStyle.outline),
+              ),
+            ),
+          ],
+        ],
+      ),
     );
+  }
+
+  void _showInfoSheet(String title, Widget content) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        padding: EdgeInsets.fromLTRB(24, 12, 24, MediaQuery.of(ctx).padding.bottom + 24),
+        decoration: BoxDecoration(
+          color: _cCard,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          border: Border.all(color: Colors.white10),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40, height: 4,
+                decoration: BoxDecoration(color: Colors.grey.shade700, borderRadius: BorderRadius.circular(2)),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: _cOrange.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: HeroIcon(HeroIcons.informationCircle, color: _cOrange, size: 20, style: HeroIconStyle.outline),
+                ),
+                const SizedBox(width: 12),
+                Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Container(height: 1, color: Colors.white10),
+            const SizedBox(height: 16),
+            content,
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _velocityInfo() {
+    final isEl = S.locale == 'el';
+    final base = TextStyle(color: Colors.grey.shade300, fontSize: 14, height: 1.7);
+    final orange = TextStyle(color: _cOrange, fontWeight: FontWeight.bold);
+    final darkOrange = TextStyle(color: _cDarkOrange, fontWeight: FontWeight.bold);
+    if (isEl) {
+      return RichText(text: TextSpan(style: base, children: [
+        TextSpan(text: 'Πορτοκαλί γραμμή', style: orange),
+        TextSpan(text: ' → λέξεις που κατέκτησες συνολικά\n'),
+        TextSpan(text: 'Σκούρο πορτοκαλί γραμμή', style: darkOrange),
+        TextSpan(text: ' → λέξεις που μαθαίνεις αυτή τη στιγμή\n\nΑνερχόμενη '),
+        TextSpan(text: 'πορτοκαλί', style: orange),
+        TextSpan(text: ' γραμμή σημαίνει ότι το λεξιλόγιό σου μεγαλώνει σταθερά. Εξάσκησε τακτικά για να τη διατηρήσεις ανερχόμενη.'),
+      ]));
+    }
+    return RichText(text: TextSpan(style: base, children: [
+      TextSpan(text: 'Orange line', style: orange),
+      TextSpan(text: ' → total words mastered over time\n'),
+      TextSpan(text: 'Dark orange line', style: darkOrange),
+      TextSpan(text: ' → words currently in learning\n\nA rising '),
+      TextSpan(text: 'orange', style: orange),
+      TextSpan(text: ' line means your vocabulary is growing steadily. Practice consistently to keep it rising.'),
+    ]));
+  }
+
+  Widget _forecastInfo() {
+    final isEl = S.locale == 'el';
+    final base = TextStyle(color: Colors.grey.shade300, fontSize: 14, height: 1.7);
+    final red = const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold);
+    if (isEl) {
+      return RichText(text: TextSpan(style: base, children: [
+        TextSpan(text: 'Δείχνει πόσες λέξεις είναι προγραμματισμένες για επανάληψη τις επόμενες 7 μέρες.\n\n'),
+        TextSpan(text: 'Καθυστ.', style: red),
+        TextSpan(text: ' (κόκκινο) → λέξεις των οποίων η ημερομηνία επανάληψης πέρασε. Ο αλγόριθμος τις επαναφέρει αυτόματα στις επερχόμενες συνεδρίες σου — επιστρέφουν στη δεξαμενή εκμάθησης.\n\nΗ συνέπεια κρατά τη μπάρα '),
+        TextSpan(text: 'Καθυστ.', style: red),
+        TextSpan(text: ' μικρή.'),
+      ]));
+    }
+    return RichText(text: TextSpan(style: base, children: [
+      TextSpan(text: 'Shows words scheduled for review each day over the next 7 days.\n\n'),
+      TextSpan(text: 'Late', style: red),
+      TextSpan(text: ' (red) → words whose review date has already passed. The algorithm automatically adds them back into your upcoming sessions — they return to your learning pool.\n\nStaying consistent keeps the '),
+      TextSpan(text: 'Late', style: red),
+      TextSpan(text: ' bar small.'),
+    ]));
+  }
+
+  Widget _memoryInfo() {
+    final isEl = S.locale == 'el';
+    final base = TextStyle(color: Colors.grey.shade300, fontSize: 14, height: 1.7);
+    final red = const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold);
+    final orange = TextStyle(color: _cOrange, fontWeight: FontWeight.bold);
+    final darkOrange = TextStyle(color: _cDarkOrange, fontWeight: FontWeight.bold);
+    if (isEl) {
+      return RichText(text: TextSpan(style: base, children: [
+        TextSpan(text: 'Ομαδοποιεί τις λέξεις βάσει πότε τις επανέλαβες τελευταία:\n\n'),
+        TextSpan(text: 'Κόκκινο', style: red),
+        TextSpan(text: ' → αυτή την εβδομάδα (φρέσκια μνήμη)\n'),
+        TextSpan(text: 'Σκούρο πορτοκαλί', style: darkOrange),
+        TextSpan(text: ' → αυτό τον μήνα\n'),
+        TextSpan(text: 'Πορτοκαλί', style: orange),
+        TextSpan(text: ' → πάνω από ένα μήνα\n\nΟι λέξεις στα δεξιά έχουν τη βαθύτερη μνήμη. Ο αλγόριθμος τις επαναφέρει αυτόματα στις συνεδρίες σου πριν ξεχαστούν.'),
+      ]));
+    }
+    return RichText(text: TextSpan(style: base, children: [
+      TextSpan(text: 'Groups your studied words by how recently they were last reviewed:\n\n'),
+      TextSpan(text: 'Red', style: red),
+      TextSpan(text: ' → reviewed this week (freshest)\n'),
+      TextSpan(text: 'Dark orange', style: darkOrange),
+      TextSpan(text: ' → reviewed this month\n'),
+      TextSpan(text: 'Orange', style: orange),
+      TextSpan(text: ' → last reviewed over a month ago\n\nWords on the right are most deeply memorized. The algorithm automatically brings them back into your sessions before they\'re forgotten.'),
+    ]));
   }
 
   Widget _buildDarkCard({double? height, required Widget child, EdgeInsets? padding, required Responsive r}) {
@@ -442,20 +596,7 @@ class _StatsPageState extends ConsumerState<StatsPage> {
             ),
           ),
         ],
-        lineTouchData: LineTouchData(
-          touchTooltipData: LineTouchTooltipData(
-            tooltipBgColor: _cCard,
-            getTooltipItems: (touchedSpots) {
-              return touchedSpots.map((spot) {
-                final bool isLearned = spot.barIndex == 1;
-                return LineTooltipItem(
-                  "${spot.y.toInt()}",
-                  TextStyle(color: isLearned ? _cOrange : _cDarkOrange, fontWeight: FontWeight.bold, fontSize: r.fontSize(12))
-                );
-              }).toList();
-            }
-          )
-        ),
+        lineTouchData: const LineTouchData(enabled: false),
       ),
     );
   }
@@ -490,8 +631,10 @@ class _StatsPageState extends ConsumerState<StatsPage> {
             PieChartData(
               pieTouchData: PieTouchData(
                 touchCallback: (FlTouchEvent event, pieTouchResponse) {
+                  // Only respond to taps, not drags — so scrolling works
+                  if (event is! FlTapUpEvent) return;
                   setState(() {
-                    if (!event.isInterestedForInteractions || pieTouchResponse == null || pieTouchResponse.touchedSection == null) {
+                    if (pieTouchResponse == null || pieTouchResponse.touchedSection == null) {
                       _touchedIndex = -1;
                       return;
                     }
@@ -599,9 +742,9 @@ class _StatsPageState extends ConsumerState<StatsPage> {
         gridData: const FlGridData(show: false),
         borderData: FlBorderData(show: false),
         barGroups: [
-          _buildBar(0, stats.fresh, _cOrange, r, anim),
+          _buildBar(0, stats.fresh, Colors.redAccent, r, anim),
           _buildBar(1, stats.fading, _cDarkOrange, r, anim),
-          _buildBar(2, stats.dormant, Colors.redAccent, r, anim),
+          _buildBar(2, stats.dormant, _cOrange, r, anim),
         ],
       ),
     );
@@ -711,31 +854,35 @@ class _StatsPageState extends ConsumerState<StatsPage> {
   Widget _buildHeatmapGraph(UserStats stats, Responsive r) {
     return SizedBox(
       width: double.infinity,
-      child: HeatMap(
-        datasets: stats.heatmapData,
-        colorMode: ColorMode.color,
-        scrollable: true,
-        showText: false,
-        startDate: DateTime.now().subtract(const Duration(days: 60)),
-        endDate: DateTime.now(),
-        colorsets: {
-          1: _cOrange.withOpacity(0.2),
-          100: _cOrange.withOpacity(0.4),
-          200: _cOrange.withOpacity(0.6),
-          300: _cOrange.withOpacity(0.8),
-          400: _cOrange,
-        },
-        onClick: (value) {
-          setState(() {
-            _selectedHeatmapDate = value;
-            _selectedHeatmapScore = stats.heatmapData[value] ?? 0;
-          });
-        },
-        defaultColor: Colors.white.withOpacity(0.05),
-        textColor: Colors.white,
-        showColorTip: false,
-        size: r.heatmapSize,
-        margin: EdgeInsets.all(r.spacing(2)),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        reverse: true,
+        child: HeatMap(
+          datasets: stats.heatmapData,
+          colorMode: ColorMode.color,
+          scrollable: false,
+          showText: false,
+          startDate: DateTime.now().subtract(const Duration(days: 60)),
+          endDate: DateTime.now(),
+          colorsets: {
+            1: _cOrange.withOpacity(0.2),
+            100: _cOrange.withOpacity(0.4),
+            200: _cOrange.withOpacity(0.6),
+            300: _cOrange.withOpacity(0.8),
+            400: _cOrange,
+          },
+          onClick: (value) {
+            setState(() {
+              _selectedHeatmapDate = value;
+              _selectedHeatmapScore = stats.heatmapData[value] ?? 0;
+            });
+          },
+          defaultColor: Colors.white.withOpacity(0.05),
+          textColor: Colors.white,
+          showColorTip: false,
+          size: r.heatmapSize,
+          margin: EdgeInsets.all(r.spacing(2)),
+        ),
       ),
     );
   }
@@ -861,7 +1008,7 @@ class _AnimateOnVisibleState extends State<_AnimateOnVisible>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 1400),
+    duration: const Duration(milliseconds: 800),
   );
   late final Animation<double> _anim = CurvedAnimation(
     parent: _controller,
@@ -872,6 +1019,15 @@ class _AnimateOnVisibleState extends State<_AnimateOnVisible>
   void dispose() {
     _controller.dispose();
     super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant _AnimateOnVisible oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.sectionKey != widget.sectionKey) {
+      // Filter changed — replay the animation
+      _controller.forward(from: 0.0);
+    }
   }
 
   void _onVisibility(VisibilityInfo info) {

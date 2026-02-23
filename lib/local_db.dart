@@ -524,18 +524,14 @@ class LocalDB {
     }
   }
 
-  /// Aggregates local attempt_logs into daily summaries and syncs to daily_stats
+  /// Snapshots current progress + aggregates attempt logs into daily_stats
   Future<void> _aggregateAndSyncDailyStats(Database db, SupabaseClient supabase, String userId) async {
     try {
-      // Find dates that have unsynced logs, then aggregate ALL logs for those dates
-      // (so if user plays twice in one day, the upsert has the full day's totals)
+      // 1. Count today's attempts from unsynced logs
       final unsyncedLogs = await db.rawQuery('''
         SELECT
           DATE(attempted_at) as date,
-          COUNT(*) as total_attempts,
-          COUNT(DISTINCT word_id) as total_words,
-          SUM(CASE WHEN correct = 1 THEN 1 ELSE 0 END) as correct_count,
-          SUM(CASE WHEN correct = 0 THEN 1 ELSE 0 END) as wrong_count
+          COUNT(*) as total_attempts
         FROM attempt_logs
         WHERE user_id = ? AND DATE(attempted_at) IN (
           SELECT DISTINCT DATE(attempted_at) FROM attempt_logs WHERE user_id = ? AND synced = 0
@@ -543,27 +539,62 @@ class LocalDB {
         GROUP BY DATE(attempted_at)
       ''', [userId, userId]);
 
-      if (unsyncedLogs.isEmpty) {
-        debugPrint("📊 No new daily stats to sync");
-        return;
+      // 2. Snapshot current user_progress state:
+      //    learned = consolidating/learned with next_due_at in the future (not due)
+      //    reviewing = learning status OR consolidating/learned with next_due_at past/now/null
+      final now = DateTime.now().toIso8601String();
+      final progressSnapshot = await db.rawQuery('''
+        SELECT
+          SUM(CASE
+            WHEN (status = 'consolidating' OR status = 'learned')
+              AND next_due_at IS NOT NULL AND next_due_at > ?
+            THEN 1 ELSE 0
+          END) as learned_count,
+          SUM(CASE
+            WHEN status = 'learning'
+              OR ((status = 'consolidating' OR status = 'learned')
+                  AND (next_due_at IS NULL OR next_due_at <= ?))
+            THEN 1 ELSE 0
+          END) as reviewing_count
+        FROM user_progress
+        WHERE user_id = ? AND status != 'new'
+      ''', [now, now, userId]);
+
+      final learned = (progressSnapshot.first['learned_count'] as int?) ?? 0;
+      final reviewing = (progressSnapshot.first['reviewing_count'] as int?) ?? 0;
+      final totalWords = learned + reviewing;
+
+      debugPrint("📊 Progress snapshot: learned=$learned, reviewing=$reviewing, total=$totalWords");
+
+      // 3. Build payload — always sync today's snapshot even if no new attempts
+      final today = DateTime.now();
+      final todayStr = "${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}";
+
+      // Map attempt counts by date
+      Map<String, int> attemptsByDate = {};
+      for (var log in unsyncedLogs) {
+        attemptsByDate[log['date'] as String] = (log['total_attempts'] as int?) ?? 0;
       }
 
-      debugPrint("📊 Aggregating ${unsyncedLogs.length} days of activity into daily_stats...");
+      // Ensure today is always included (for the progress snapshot)
+      if (!attemptsByDate.containsKey(todayStr)) {
+        attemptsByDate[todayStr] = 0;
+      }
 
       List<Map<String, dynamic>> dailyStatsPayload = [];
-
-      for (var dayLog in unsyncedLogs) {
+      for (var entry in attemptsByDate.entries) {
+        final isToday = entry.key == todayStr;
         dailyStatsPayload.add({
           'user_id': userId,
-          'date': dayLog['date'],
-          'total_words': dayLog['total_words'] ?? 0,
-          'learned_count': dayLog['correct_count'] ?? 0,
-          'reviewing_count': dayLog['wrong_count'] ?? 0,
-          'attempts_sum': dayLog['total_attempts'] ?? 0,
+          'date': entry.key,
+          // Only today gets the live progress snapshot; past days keep attempts only
+          'total_words': isToday ? totalWords : entry.value > 0 ? totalWords : 0,
+          'learned_count': isToday ? learned : 0,
+          'reviewing_count': isToday ? reviewing : 0,
+          'attempts_sum': entry.value,
         });
       }
 
-      // Batch upsert daily_stats
       if (dailyStatsPayload.isNotEmpty) {
         await supabase.from('daily_stats').upsert(
           dailyStatsPayload,
@@ -770,11 +801,18 @@ class LocalDB {
       //    so we must use lesson_words to know the correct word IDs.
       debugPrint("📥 Step 6: Downloading words (need ${neededWordIds.length} unique word IDs)");
       if (neededWordIds.isNotEmpty) {
-        // Find which word IDs we're missing locally
-        final existingWordIds = (await db.rawQuery(
-          'SELECT id FROM words WHERE id IN (${neededWordIds.map((_) => '?').join(',')})',
-          neededWordIds.toList(),
-        )).map((r) => r['id'] as int).toSet();
+        // Find which word IDs we're missing locally (chunked to avoid SQLite 999 variable limit)
+        final existingWordIds = <int>{};
+        final allNeeded = neededWordIds.toList();
+        const int chunkSize = 500;
+        for (var i = 0; i < allNeeded.length; i += chunkSize) {
+          final chunk = allNeeded.sublist(i, (i + chunkSize < allNeeded.length) ? i + chunkSize : allNeeded.length);
+          final rows = await db.rawQuery(
+            'SELECT id FROM words WHERE id IN (${chunk.map((_) => '?').join(',')})',
+            chunk,
+          );
+          existingWordIds.addAll(rows.map((r) => r['id'] as int));
+        }
 
         final missingWordIds = neededWordIds.difference(existingWordIds);
         debugPrint("   📊 ${existingWordIds.length} already cached, ${missingWordIds.length} missing");
@@ -1415,6 +1453,57 @@ class LocalDB {
       );
     } catch (e) {
       debugPrint("❌ Error setting display_name: $e");
+    }
+  }
+
+  // =========================================================
+  // 💳 SUBSCRIPTION CACHE (offline access)
+  // =========================================================
+
+  /// Get cached subscription state (for offline access)
+  Future<Map<String, String?>> getSubscriptionCache() async {
+    final db = await database;
+    try {
+      final keys = ['sub_access_level', 'sub_trial_days_left', 'sub_expires_at'];
+      final result = await db.query('app_meta',
+        where: 'key IN (?, ?, ?)',
+        whereArgs: keys,
+      );
+      final map = <String, String?>{};
+      for (var row in result) {
+        map[row['key'] as String] = row['value'] as String?;
+      }
+      return map;
+    } catch (e) {
+      debugPrint("❌ Error reading subscription cache: $e");
+      return {};
+    }
+  }
+
+  /// Save subscription state to local cache
+  Future<void> setSubscriptionCache({
+    required String accessLevel,
+    required int trialDaysLeft,
+    String? expiresAt,
+  }) async {
+    final db = await database;
+    try {
+      final batch = db.batch();
+      batch.insert('app_meta',
+        {'key': 'sub_access_level', 'value': accessLevel},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      batch.insert('app_meta',
+        {'key': 'sub_trial_days_left', 'value': trialDaysLeft.toString()},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      batch.insert('app_meta',
+        {'key': 'sub_expires_at', 'value': expiresAt ?? ''},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      await batch.commit(noResult: true);
+    } catch (e) {
+      debugPrint("❌ Error saving subscription cache: $e");
     }
   }
 

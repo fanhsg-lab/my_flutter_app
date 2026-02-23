@@ -14,15 +14,18 @@ import 'statistics.dart';
 import 'profile.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:fl_chart/fl_chart.dart'; // Needed for the Bar Chart
+import '../services/subscription_service.dart';
+import 'paywall.dart';
 
 class MainScreen extends StatefulWidget {
-  const MainScreen({super.key});
+  final VoidCallback? onReady;
+  const MainScreen({super.key, this.onReady});
 
   @override
   State<MainScreen> createState() => _MainScreenState();
 }
 
-class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateMixin {
+class _MainScreenState extends State<MainScreen> {
   int _streak = 0;
   int _totalLearnedWords = 0;
   int _currentLessonIndex = 0;
@@ -32,97 +35,107 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   String _bookTitle = '';
   String _bookLevel = '';
   int _bottomNavIndex = 0;
-  int _previousNavIndex = 0;
-  bool _isLoading = true;
+  bool _isLoading = false;
+  bool _initialLoadDone = false;
   List<LessonData> _lessons = [];
 
-  late final AnimationController _slideController = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 500),
-  );
+  PageController? _lessonPageController;
 
   @override
   void initState() {
     super.initState();
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-    _slideController.value = 1.0; // start completed (no animation on first load)
     _initialLoad();
   }
 
   @override
   void dispose() {
-    _slideController.dispose();
+    _lessonPageController?.dispose();
     super.dispose();
   }
 
   void _navigateToTab(int index) {
     if (index == _bottomNavIndex) return;
-    setState(() {
-      _previousNavIndex = _bottomNavIndex;
-      _bottomNavIndex = index;
-    });
-    _slideController.forward(from: 0.0);
+    setState(() => _bottomNavIndex = index);
+    if (index == 0 && _lessonPageController != null && _lessonPageController!.hasClients) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_lessonPageController!.hasClients) {
+          _lessonPageController!.jumpToPage(_currentLessonIndex);
+        }
+      });
+    }
   }
 
   Future<void> _initialLoad() async {
+    // Read local data only → signal onReady so splash can fade
+    await _autoSelectTeacherAndBook();
+    if (!mounted) return;
+    // Initialize subscription state (cached first, then server refresh)
+    await SubscriptionService.instance.initialize();
+    if (!mounted) return;
     await _fetchDashboardData();
-    await _calculateStreakAndStats(); // Updated function
+    if (!mounted) return;
+    await _calculateStreakAndStats();
 
     if (_lessons.isEmpty) {
+      // First use — no local data, sync immediately and show loader
       if (mounted) setState(() => _isLoading = true);
-      debugPrint("📱 Local DB is empty. Starting First-Time Sync...");
       try {
         await LocalDB.instance.syncEverything();
-
-        // Auto-select first teacher and book if none selected
-        final currentTeacher = await LocalDB.instance.getCurrentTeacherId();
-        final currentBook = await LocalDB.instance.getCurrentBookId();
-
-        if (currentTeacher == null || currentBook == null) {
-          final teachers = await LocalDB.instance.getAllTeachers();
-          if (teachers.isNotEmpty) {
-            final firstTeacher = teachers.first;
-            await LocalDB.instance.setCurrentTeacherId(firstTeacher.id);
-
-            final books = await LocalDB.instance.getAllBooks(teacherId: firstTeacher.id);
-            if (books.isNotEmpty) {
-              await LocalDB.instance.setCurrentBookId(books.first.id);
-              debugPrint("👨‍🏫 Auto-selected Teacher ${firstTeacher.id} and Book ${books.first.id}");
-            }
-          }
-        }
       } catch (e) {
         debugPrint("⚠️ First Sync Error: $e");
       }
-      if (mounted) await _fetchDashboardData();
+      if (!mounted) return;
+
+      // Always force-select teacher/book from local DB after first sync
+      // (sync may set app_meta but getAllBooks() is the source of truth for what's available)
+      await _autoSelectTeacherAndBook(force: true);
+      if (!mounted) return;
+
+      final bookAfterSync = await LocalDB.instance.getCurrentBookId();
+      debugPrint("🔍 First install: bookId after sync=$bookAfterSync, mounted=$mounted");
+
+      await _fetchDashboardData();
+      debugPrint("🔍 First install: lessons after fetchDashboardData=${_lessons.length}");
+      await _calculateStreakAndStats();
+
+      if (_lessons.isEmpty) {
+        debugPrint("⚠️ No lessons after sync — user may need to refresh");
+      }
     } else {
-      debugPrint("🔄 Starting Background Sync...");
-      LocalDB.instance.syncEverything().then((_) async {
-         debugPrint("✅ Background Sync Complete. Refreshing UI.");
-
-         // Auto-select first teacher and book if none selected
-         final currentTeacher = await LocalDB.instance.getCurrentTeacherId();
-         final currentBook = await LocalDB.instance.getCurrentBookId();
-
-         if (currentTeacher == null || currentBook == null) {
-           final teachers = await LocalDB.instance.getAllTeachers();
-           if (teachers.isNotEmpty) {
-             final firstTeacher = teachers.first;
-             await LocalDB.instance.setCurrentTeacherId(firstTeacher.id);
-
-             final books = await LocalDB.instance.getAllBooks(teacherId: firstTeacher.id);
-             if (books.isNotEmpty) {
-               await LocalDB.instance.setCurrentBookId(books.first.id);
-               debugPrint("👨‍🏫 Auto-selected Teacher ${firstTeacher.id} and Book ${books.first.id}");
-             }
-           }
-         }
-
-         if (mounted) {
-           _fetchDashboardData();
-           _calculateStreakAndStats();
-         }
+      // Has local data — sync later after splash is fully gone
+      Future.delayed(const Duration(milliseconds: 2000), () {
+        if (!mounted) return;
+        LocalDB.instance.syncEverything().then((_) async {
+          debugPrint("✅ Background Sync Complete. Refreshing UI.");
+          await _autoSelectTeacherAndBook();
+          if (mounted) {
+            _fetchDashboardData();
+            _calculateStreakAndStats();
+          }
+        }).catchError((e) {
+          debugPrint("⚠️ Background Sync Error: $e");
+        });
       });
+    }
+  }
+
+  Future<void> _autoSelectTeacherAndBook({bool force = false}) async {
+    final currentTeacher = await LocalDB.instance.getCurrentTeacherId();
+    final currentBook = await LocalDB.instance.getCurrentBookId();
+
+    if (force || currentTeacher == null || currentBook == null) {
+      final teachers = await LocalDB.instance.getAllTeachers();
+      if (teachers.isNotEmpty) {
+        final firstTeacher = teachers.first;
+        await LocalDB.instance.setCurrentTeacherId(firstTeacher.id);
+
+        final books = await LocalDB.instance.getAllBooks(teacherId: firstTeacher.id);
+        if (books.isNotEmpty) {
+          await LocalDB.instance.setCurrentBookId(books.first.id);
+          debugPrint("👨‍🏫 Auto-selected Teacher ${firstTeacher.id} and Book ${books.first.id}");
+        }
+      }
     }
   }
 
@@ -150,6 +163,10 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           _bookTitle = bookTitle;
           _bookLevel = bookLevel;
           _isLoading = false;
+          if (!_initialLoadDone) {
+            _initialLoadDone = true;
+            widget.onReady?.call();
+          }
         });
       }
     } catch (e) {
@@ -284,6 +301,103 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           ),
         );
       }
+    );
+  }
+
+  void _showProgressInfo() {
+    final isEl = S.locale == 'el';
+    final base = TextStyle(color: Colors.grey.shade300, fontSize: 14, height: 1.75);
+    const orange = TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold);
+    final greyBold = TextStyle(color: Colors.grey.shade500, fontWeight: FontWeight.bold);
+    const white = TextStyle(color: Colors.white, fontWeight: FontWeight.bold);
+
+    const accent = TextStyle(color: AppColors.accent, fontWeight: FontWeight.bold);
+
+    final Widget content = isEl
+        ? RichText(text: TextSpan(style: base, children: [
+            TextSpan(text: '⚠️  Μόνο το ', style: base),
+            TextSpan(text: 'Test mode', style: orange),
+            TextSpan(text: ' μετράει για την πρόοδο και τα στατιστικά σου. Το Game και το Survival δεν αλλάζουν την κατάσταση των λέξεων.\n\n', style: base),
+
+            TextSpan(text: 'Κατάσταση λέξεων:\n', style: white),
+            TextSpan(text: '●  ', style: greyBold),
+            TextSpan(text: 'Νέα', style: greyBold),
+            TextSpan(text: '  —  δεν έχει δοκιμαστεί ακόμα στο Test\n', style: base),
+            TextSpan(text: '●  ', style: accent),
+            TextSpan(text: 'Σε εκμάθηση', style: accent),
+            TextSpan(text: '  —  ενεργά σε δοκιμασία, δεν έχει κατακτηθεί ακόμα\n', style: base),
+            TextSpan(text: '●  ', style: orange),
+            TextSpan(text: 'Εκμαθημένη', style: orange),
+            TextSpan(text: '  —  καλά εδραιωμένη, δεν χρειάζεται επανάληψη αυτή τη στιγμή\n\n', style: base),
+
+            TextSpan(text: 'Η καμπύλη λήθης:\n', style: white),
+            TextSpan(text: 'Μόλις μια λέξη γίνει ', style: base),
+            TextSpan(text: 'Εκμαθημένη', style: orange),
+            TextSpan(text: ', ο αλγόριθμος την προγραμματίζει για μελλοντική επανάληψη. ⏳ Με τον χρόνο, υποθέτει ότι θα την ξεχάσεις — και την επαναφέρει αυτόματα στη ', style: base),
+            TextSpan(text: '🔄 δεξαμενή εκμάθησης', style: accent),
+            TextSpan(text: '. Όσες περισσότερες φορές την ανακαλέσεις σωστά, τόσο αργότερα θα επιστρέψει.', style: base),
+          ]))
+        : RichText(text: TextSpan(style: base, children: [
+            TextSpan(text: '⚠️  Only ', style: base),
+            TextSpan(text: 'Test mode', style: orange),
+            TextSpan(text: ' counts toward your progress and statistics. Game and Survival do not change word status.\n\n', style: base),
+
+            TextSpan(text: 'Word states:\n', style: white),
+            TextSpan(text: '●  ', style: greyBold),
+            TextSpan(text: 'New', style: greyBold),
+            TextSpan(text: '  —  not tested yet in Test mode\n', style: base),
+            TextSpan(text: '●  ', style: accent),
+            TextSpan(text: 'Learning', style: accent),
+            TextSpan(text: '  —  actively being tested, not yet mastered\n', style: base),
+            TextSpan(text: '●  ', style: orange),
+            TextSpan(text: 'Mastered', style: orange),
+            TextSpan(text: '  —  well established, no review needed right now\n\n', style: base),
+
+            TextSpan(text: 'The forgetting curve:\n', style: white),
+            TextSpan(text: 'Once a word is ', style: base),
+            TextSpan(text: 'Mastered', style: orange),
+            TextSpan(text: ', the algorithm schedules it for a future review. ⏳ Over time it assumes you\'ll forget — and automatically puts it back into your ', style: base),
+            TextSpan(text: '🔄 learning pool', style: accent),
+            TextSpan(text: '. The more times you\'ve recalled it correctly, the longer before it returns.', style: base),
+          ]));
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => Container(
+        padding: EdgeInsets.fromLTRB(24, 12, 24, MediaQuery.of(ctx).padding.bottom + 24),
+        decoration: BoxDecoration(
+          color: AppColors.cardColor,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          border: Border.all(color: Colors.white10),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(child: Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.grey.shade700, borderRadius: BorderRadius.circular(2)))),
+            const SizedBox(height: 20),
+            Row(children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(color: AppColors.primary.withOpacity(0.15), borderRadius: BorderRadius.circular(10)),
+                child: const HeroIcon(HeroIcons.informationCircle, color: AppColors.primary, size: 20, style: HeroIconStyle.outline),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                isEl ? 'Πώς λειτουργεί η Πρόοδος' : 'How Progress Works',
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+            ]),
+            const SizedBox(height: 16),
+            Container(height: 1, color: Colors.white10),
+            const SizedBox(height: 16),
+            content,
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
     );
   }
 
@@ -532,47 +646,24 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
   @override
   Widget build(BuildContext context) {
+    // Don't show anything until initial data is loaded (splash already preloaded it)
+    if (!_initialLoadDone) {
+      return Scaffold(backgroundColor: AppColors.background, body: const SizedBox.shrink());
+    }
+
+    // Build pages ONCE outside the animation builder
+    final pages = <Widget>[
+      _buildLearnViewWithPaywall(),
+      const StatsPage(),
+      _buildLibraryView(),
+      const ProfileScreen(),
+    ];
+
     return Scaffold(
       backgroundColor: AppColors.background,
-      body: AnimatedBuilder(
-        animation: _slideController,
-        builder: (context, _) {
-          final pages = <Widget>[
-            _buildLearnView(),
-            const StatsPage(),
-            _buildLibraryView(),
-            const ProfileScreen(),
-          ];
-
-          final direction = _bottomNavIndex > _previousNavIndex ? 1.0 : -1.0;
-          final progress = Curves.easeOutCubic.transform(_slideController.value);
-
-          return Stack(
-            children: List.generate(pages.length, (i) {
-              final isActive = i == _bottomNavIndex;
-              final isPrevious = i == _previousNavIndex && _slideController.isAnimating;
-
-              Offset translation;
-              if (isActive) {
-                translation = Offset(direction * (1.0 - progress), 0);
-              } else if (isPrevious) {
-                translation = Offset(-direction * progress, 0);
-              } else {
-                translation = Offset.zero;
-              }
-
-              return Visibility(
-                visible: isActive || isPrevious,
-                maintainState: true,
-                maintainAnimation: true,
-                child: FractionalTranslation(
-                  translation: translation,
-                  child: SizedBox.expand(child: pages[i]),
-                ),
-              );
-            }),
-          );
-        },
+      body: IndexedStack(
+        index: _bottomNavIndex,
+        children: pages,
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _bottomNavIndex,
@@ -604,6 +695,53 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildLearnViewWithPaywall() {
+    return ValueListenableBuilder<SubscriptionState>(
+      valueListenable: SubscriptionService.instance.state,
+      builder: (context, subState, _) {
+        final r = Responsive(context);
+        return Stack(
+          children: [
+            _buildLearnView(),
+            // Trial banner (last 14 days)
+            if (subState.access == AccessLevel.trial && subState.trialDaysLeft <= 14)
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: SafeArea(
+                  child: Container(
+                    margin: EdgeInsets.symmetric(horizontal: r.spacing(16), vertical: r.spacing(4)),
+                    padding: EdgeInsets.symmetric(horizontal: r.spacing(12), vertical: r.spacing(8)),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(r.radius(10)),
+                      border: Border.all(color: AppColors.primary.withOpacity(0.3)),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.timer_outlined, color: AppColors.primary, size: r.iconSize(16)),
+                        SizedBox(width: r.spacing(8)),
+                        Expanded(
+                          child: Text(
+                            '${S.freeTrialDaysLeft}: ${S.trialDaysN(subState.trialDaysLeft)}',
+                            style: TextStyle(color: AppColors.primary, fontSize: r.fontSize(12), fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            // Paywall overlay when locked
+            if (!subState.canLearn)
+              const PaywallOverlay(),
+          ],
+        );
+      },
     );
   }
 
@@ -648,7 +786,21 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       body: _isLoading
           ? const Center(child: _PoppingBubbleLoader())
           : _lessons.isEmpty
-              ? Center(child: Text(S.noLessonsFound, style: TextStyle(color: Colors.white, fontSize: r.fontSize(16))))
+              ? Center(
+                  child: GestureDetector(
+                    onTap: _showBookSelector,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        HeroIcon(HeroIcons.bookOpen, color: AppColors.primary, size: r.iconSize(48), style: HeroIconStyle.outline),
+                        r.gapH(16),
+                        Text(S.selectBook, style: TextStyle(color: Colors.white, fontSize: r.fontSize(16), fontWeight: FontWeight.bold)),
+                        r.gapH(8),
+                        Text(S.tapToSelectBook, style: TextStyle(color: Colors.grey, fontSize: r.fontSize(13))),
+                      ],
+                    ),
+                  ),
+                )
               : Column(
                   children: [
                     r.gapH(5),
@@ -663,7 +815,10 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                     r.gapH(5),
                     Expanded(
                       child: PageView.builder(
-                        controller: PageController(viewportFraction: r.device(phone: 0.85, tablet: 0.6)),
+                        controller: _lessonPageController ??= PageController(
+                          viewportFraction: r.device(phone: 0.85, tablet: 0.6),
+                          initialPage: _currentLessonIndex,
+                        ),
                         itemCount: _lessons.length,
                         onPageChanged: (index) => setState(() => _currentLessonIndex = index),
                         itemBuilder: (context, index) {
@@ -709,7 +864,10 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                               ),
                               onPressed: () async {
                                 final selectedLesson = _lessons[_currentLessonIndex];
-                                final bool isReversed = _selectedLanguage.startsWith('Gr');
+                                bool isReversed = _selectedLanguage.startsWith('Gr');
+                                // English books have swapped columns (en=English, es=Greek)
+                                // so flip the direction
+                                if (_sourceLanguage == 'en') isReversed = !isReversed;
                                 Route? route;
 
                                 if (_selectedMode == 'Game') {
@@ -888,15 +1046,17 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     final circleSize = r.progressCircleSize;
     final strokeWidth = r.scale(12).clamp(8.0, 16.0);
 
-    return Padding(
-      padding: r.padding(horizontal: 24, vertical: 30),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Column(children: [
-            Text(S.chapterN(lesson.chapter_number), style: TextStyle(fontSize: r.fontSize(14), fontWeight: FontWeight.bold, color: Colors.white)),
-            r.gapH(8),
-            Text(lesson.title.toUpperCase(), textAlign: TextAlign.center, style: TextStyle(fontSize: r.fontSize(15), letterSpacing: 1.3, fontWeight: FontWeight.bold, color: isActive ? AppColors.primary : Colors.grey))
+    return Stack(
+      children: [
+        Padding(
+          padding: r.padding(horizontal: 24, vertical: 30),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(children: [
+                Text(S.chapterN(lesson.chapter_number), style: TextStyle(fontSize: r.fontSize(14), fontWeight: FontWeight.bold, color: Colors.white)),
+                r.gapH(8),
+                Text(lesson.title.toUpperCase(), textAlign: TextAlign.center, style: TextStyle(fontSize: r.fontSize(15), letterSpacing: 1.3, fontWeight: FontWeight.bold, color: isActive ? AppColors.primary : Colors.grey))
           ]),
           SizedBox(
             height: circleSize,
@@ -933,6 +1093,16 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           )
         ],
       ),
+        ),
+        Positioned(
+          right: 16,
+          top: 16,
+          child: GestureDetector(
+            onTap: _showProgressInfo,
+            child: HeroIcon(HeroIcons.informationCircle, color: Colors.grey.withOpacity(0.4), size: r.iconSize(18), style: HeroIconStyle.outline),
+          ),
+        ),
+      ],
     );
   }
 
@@ -1109,17 +1279,16 @@ class _LibraryLessonTile extends StatefulWidget {
   State<_LibraryLessonTile> createState() => _LibraryLessonTileState();
 }
 
-class _LibraryLessonTileState extends State<_LibraryLessonTile> {
+class _LibraryLessonTileState extends State<_LibraryLessonTile> with SingleTickerProviderStateMixin {
   List<Map<String, dynamic>>? _words;
   bool _isLoading = false;
+  bool _isExpanded = false;
 
   Future<void> _loadWords() async {
     if (_words != null) return; // already loaded
     setState(() => _isLoading = true);
     final db = await LocalDB.instance.database;
     final userId = Supabase.instance.client.auth.currentUser?.id;
-
-    debugPrint("🔍 LIBRARY _loadWords lesson=${widget.lessonId} userId=$userId");
 
     final rows = await db.rawQuery('''
       SELECT w.id, w.es, w.en,
@@ -1134,20 +1303,17 @@ class _LibraryLessonTileState extends State<_LibraryLessonTile> {
       ORDER BY w.id ASC
     ''', [userId ?? '', widget.lessonId]);
 
-    // DEBUG: Log all words and their statuses for this lesson
-    debugPrint("🔍 LIBRARY lesson=${widget.lessonId} found ${rows.length} words");
-    for (var r in rows) {
-      if (r['id'] == 1008 || r['status'] != 'new') {
-        debugPrint("   🔍 word=${r['id']} es=${r['es']} status=${r['status']} attempts=${r['total_attempts']}");
-      }
-    }
-
     if (mounted) {
       setState(() {
         _words = rows;
         _isLoading = false;
       });
     }
+  }
+
+  void _toggle() {
+    setState(() => _isExpanded = !_isExpanded);
+    if (_isExpanded) _loadWords();
   }
 
   @override
@@ -1160,156 +1326,177 @@ class _LibraryLessonTileState extends State<_LibraryLessonTile> {
         borderRadius: BorderRadius.circular(r.radius(12)),
       ),
       clipBehavior: Clip.antiAlias,
-      child: Theme(
-        data: Theme.of(context).copyWith(
-          dividerColor: Colors.transparent,
-          splashColor: AppColors.primary.withOpacity(0.08),
-          highlightColor: AppColors.primary.withOpacity(0.05),
-        ),
-        child: ExpansionTile(
-          tilePadding: EdgeInsets.symmetric(horizontal: r.spacing(16), vertical: r.spacing(4)),
-          childrenPadding: EdgeInsets.zero,
-          onExpansionChanged: (expanded) {
-            if (expanded) _loadWords();
-          },
-          leading: Container(
-            width: r.scale(40),
-            height: r.scale(40),
-            decoration: BoxDecoration(
-              color: AppColors.primary.withOpacity(0.15),
-              borderRadius: BorderRadius.circular(r.radius(10)),
-            ),
-            child: Center(
-              child: Text(
-                '${widget.chapterNumber}',
-                style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: r.fontSize(16)),
-              ),
-            ),
-          ),
-          title: Text(
-            widget.title,
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: r.fontSize(14)),
-          ),
-          subtitle: Text(
-            S.nWords(widget.wordCount),
-            style: TextStyle(color: Colors.grey, fontSize: r.fontSize(11)),
-          ),
-          iconColor: Colors.grey,
-          collapsedIconColor: Colors.grey,
-          children: [
-            if (_isLoading)
-              Padding(
-                padding: EdgeInsets.all(r.spacing(16)),
-                child: const Center(child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary))),
-              )
-            else if (_words != null && _words!.isEmpty)
-              Padding(
-                padding: EdgeInsets.all(r.spacing(16)),
-                child: Text(S.noWordsInLesson, style: TextStyle(color: Colors.grey, fontSize: r.fontSize(12))),
-              )
-            else if (_words != null)
-              // Header row
-              ...[
-                Container(
-                  padding: EdgeInsets.symmetric(horizontal: r.spacing(16), vertical: r.spacing(8)),
-                  decoration: BoxDecoration(
-                    border: Border(top: BorderSide(color: Colors.white.withOpacity(0.05))),
-                  ),
-                  child: Row(
-                    children: [
-                      Expanded(flex: 4, child: Text(S.sourceLanguageName(widget.sourceLanguage), style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: r.fontSize(11), letterSpacing: 1))),
-                      Expanded(flex: 4, child: Text(S.greek, style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: r.fontSize(11), letterSpacing: 1))),
-                      SizedBox(width: r.spacing(40), child: Text(S.stats, style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: r.fontSize(11), letterSpacing: 1), textAlign: TextAlign.center)),
-                    ],
-                  ),
-                ),
-                // Word rows
-                ...(_words!.map((word) {
-                  final status = word['status']?.toString() ?? 'new';
-                  final strength = (word['strength'] as num?)?.toDouble() ?? 0.0;
-                  final attempts = (word['total_attempts'] as int?) ?? 0;
-                  final correct = (word['total_correct'] as int?) ?? 0;
-
-                  // Status color
-                  final Color statusColor;
-                  if (status == 'learned') {
-                    statusColor = AppColors.primary;
-                  } else if (status == 'learning') {
-                    statusColor = AppColors.accent;
-                  } else {
-                    statusColor = Colors.grey.shade700;
-                  }
-
-                  return Container(
-                    padding: EdgeInsets.symmetric(horizontal: r.spacing(16), vertical: r.spacing(8)),
+      child: Column(
+        children: [
+          // Header (tappable)
+          GestureDetector(
+            onTap: _toggle,
+            behavior: HitTestBehavior.opaque,
+            child: Padding(
+              padding: EdgeInsets.symmetric(horizontal: r.spacing(16), vertical: r.spacing(12)),
+              child: Row(
+                children: [
+                  Container(
+                    width: r.scale(40),
+                    height: r.scale(40),
                     decoration: BoxDecoration(
-                      border: Border(top: BorderSide(color: Colors.white.withOpacity(0.03))),
+                      color: AppColors.primary.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(r.radius(10)),
                     ),
-                    child: Row(
+                    child: Center(
+                      child: Text(
+                        '${widget.chapterNumber}',
+                        style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: r.fontSize(16)),
+                      ),
+                    ),
+                  ),
+                  SizedBox(width: r.spacing(12)),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Spanish word
-                        Expanded(
-                          flex: 4,
-                          child: Row(
-                            children: [
-                              Container(
-                                width: r.scale(8),
-                                height: r.scale(8),
-                                decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle),
-                              ),
-                              SizedBox(width: r.spacing(6)),
-                              Expanded(
-                                child: Text(
-                                  word['es']?.toString() ?? '',
-                                  style: TextStyle(color: Colors.white, fontSize: r.fontSize(13)),
-                                ),
-                              ),
-                            ],
-                          ),
+                        Text(
+                          widget.title,
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: r.fontSize(14)),
                         ),
-                        // Greek word
-                        Expanded(
-                          flex: 4,
-                          child: Text(
-                            word['en']?.toString() ?? '',
-                            style: TextStyle(color: Colors.white70, fontSize: r.fontSize(13)),
-                          ),
-                        ),
-                        // Strength bar + accuracy
-                        SizedBox(
-                          width: r.spacing(40),
-                          child: Column(
-                            children: [
-                              // Strength bar
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(r.radius(3)),
-                                child: SizedBox(
-                                  height: r.scale(4),
-                                  child: LinearProgressIndicator(
-                                    value: strength.clamp(0.0, 1.0),
-                                    backgroundColor: Colors.white.withOpacity(0.08),
-                                    valueColor: AlwaysStoppedAnimation(statusColor),
-                                  ),
-                                ),
-                              ),
-                              SizedBox(height: r.spacing(3)),
-                              // Accuracy text
-                              Text(
-                                attempts > 0 ? '${((correct / attempts) * 100).round()}%' : '-',
-                                style: TextStyle(color: Colors.grey, fontSize: r.fontSize(9)),
-                              ),
-                            ],
-                          ),
+                        Text(
+                          S.nWords(widget.wordCount),
+                          style: TextStyle(color: Colors.grey, fontSize: r.fontSize(11)),
                         ),
                       ],
                     ),
-                  );
-                })),
-                SizedBox(height: r.spacing(8)),
-              ],
-          ],
-        ),
+                  ),
+                  AnimatedRotation(
+                    turns: _isExpanded ? 0.5 : 0.0,
+                    duration: const Duration(milliseconds: 200),
+                    curve: Curves.easeOutCubic,
+                    child: HeroIcon(HeroIcons.chevronDown, color: Colors.grey, size: r.iconSize(20), style: HeroIconStyle.outline),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          // Expandable content
+          AnimatedSize(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOutCubic,
+            alignment: Alignment.topCenter,
+            child: _isExpanded ? _buildContent(r) : const SizedBox.shrink(),
+          ),
+        ],
       ),
+    );
+  }
+
+  Widget _buildContent(Responsive r) {
+    if (_isLoading) {
+      return Padding(
+        padding: EdgeInsets.all(r.spacing(16)),
+        child: const Center(child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary))),
+      );
+    }
+    if (_words != null && _words!.isEmpty) {
+      return Padding(
+        padding: EdgeInsets.all(r.spacing(16)),
+        child: Text(S.noWordsInLesson, style: TextStyle(color: Colors.grey, fontSize: r.fontSize(12))),
+      );
+    }
+    if (_words == null) return const SizedBox.shrink();
+
+    return Column(
+      children: [
+        // Header row
+        Container(
+          padding: EdgeInsets.symmetric(horizontal: r.spacing(16), vertical: r.spacing(8)),
+          decoration: BoxDecoration(
+            border: Border(top: BorderSide(color: Colors.white.withOpacity(0.05))),
+          ),
+          child: Row(
+            children: [
+              Expanded(flex: 4, child: Text(S.sourceLanguageName(widget.sourceLanguage), style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: r.fontSize(11), letterSpacing: 1))),
+              Expanded(flex: 4, child: Text(S.greek, style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: r.fontSize(11), letterSpacing: 1))),
+              SizedBox(width: r.spacing(40), child: Text(S.stats, style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: r.fontSize(11), letterSpacing: 1), textAlign: TextAlign.center)),
+            ],
+          ),
+        ),
+        // Word rows
+        ...(_words!.map((word) {
+          final status = word['status']?.toString() ?? 'new';
+          final strength = (word['strength'] as num?)?.toDouble() ?? 0.0;
+          final attempts = (word['total_attempts'] as int?) ?? 0;
+          final correct = (word['total_correct'] as int?) ?? 0;
+
+          final Color statusColor;
+          if (status == 'learned') {
+            statusColor = AppColors.primary;
+          } else if (status == 'learning') {
+            statusColor = AppColors.accent;
+          } else {
+            statusColor = Colors.grey.shade700;
+          }
+
+          return Container(
+            padding: EdgeInsets.symmetric(horizontal: r.spacing(16), vertical: r.spacing(8)),
+            decoration: BoxDecoration(
+              border: Border(top: BorderSide(color: Colors.white.withOpacity(0.03))),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  flex: 4,
+                  child: Row(
+                    children: [
+                      Container(
+                        width: r.scale(8),
+                        height: r.scale(8),
+                        decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle),
+                      ),
+                      SizedBox(width: r.spacing(6)),
+                      Expanded(
+                        child: Text(
+                          word['es']?.toString() ?? '',
+                          style: TextStyle(color: Colors.white, fontSize: r.fontSize(13)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  flex: 4,
+                  child: Text(
+                    word['en']?.toString() ?? '',
+                    style: TextStyle(color: Colors.white70, fontSize: r.fontSize(13)),
+                  ),
+                ),
+                SizedBox(
+                  width: r.spacing(40),
+                  child: Column(
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(r.radius(3)),
+                        child: SizedBox(
+                          height: r.scale(4),
+                          child: LinearProgressIndicator(
+                            value: strength.clamp(0.0, 1.0),
+                            backgroundColor: Colors.white.withOpacity(0.08),
+                            valueColor: AlwaysStoppedAnimation(statusColor),
+                          ),
+                        ),
+                      ),
+                      SizedBox(height: r.spacing(3)),
+                      Text(
+                        attempts > 0 ? '${((correct / attempts) * 100).round()}%' : '-',
+                        style: TextStyle(color: Colors.grey, fontSize: r.fontSize(9)),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          );
+        })),
+        SizedBox(height: r.spacing(8)),
+      ],
     );
   }
 }

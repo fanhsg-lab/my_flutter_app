@@ -14,6 +14,118 @@ import '../services/app_strings.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'stats_provider.dart'; 
 
+// Greek syllable-aware soft hyphenation.
+// Inserts \u00AD at valid break points so Flutter wraps words correctly.
+String greekHyphenate(String input) {
+  // Process each word separately, preserve spaces
+  return input.split(' ').map(_hyphenateWord).join(' ');
+}
+
+String _hyphenateWord(String word) {
+  if (word.length <= 3) return word;
+
+  // Greek diphthongs — treated as single vowel units, never split
+  const diphthongs = ['αι', 'ει', 'οι', 'ου', 'αυ', 'ευ', 'ηυ',
+                       'Αι', 'Ει', 'Οι', 'Ου', 'Αυ', 'Ευ', 'Ηυ',
+                       'ΑΙ', 'ΕΙ', 'ΟΙ', 'ΟΥ', 'ΑΥ', 'ΕΥ', 'ΗΥ'];
+  const vowels = 'αεηιουωάέήίόύώΑΕΗΙΟΥΩΆΈΉΊΌΎΏϊϋΐΰ';
+
+  // Consonant clusters that can start a Greek word (kept together)
+  const validOnsets = {
+    'μπ', 'ντ', 'γκ', 'τσ', 'τζ',
+    'βλ', 'γλ', 'κλ', 'πλ', 'φλ', 'χλ',
+    'βρ', 'γρ', 'δρ', 'κρ', 'πρ', 'τρ', 'φρ', 'χρ', 'θρ',
+    'σπ', 'στ', 'σκ', 'σμ', 'σν', 'σφ', 'σχ', 'σθ', 'σβ',
+    'πν', 'μν', 'κν', 'γν', 'θν',
+    'κτ', 'φτ', 'χτ', 'πτ',
+    'σπρ', 'στρ', 'σκρ', 'σπλ', 'σκλ',
+  };
+
+  bool isVowel(String ch) => vowels.contains(ch);
+
+  // Parse word into tokens: each token is either a diphthong or a single char
+  // tagged as vowel (V) or consonant (C)
+  List<String> tokens = [];
+  List<bool> isV = [];
+  int i = 0;
+  while (i < word.length) {
+    // Check for diphthong (2-char)
+    if (i + 1 < word.length) {
+      final pair = word.substring(i, i + 2);
+      if (diphthongs.contains(pair)) {
+        tokens.add(pair);
+        isV.add(true);
+        i += 2;
+        continue;
+      }
+    }
+    final ch = word[i];
+    tokens.add(ch);
+    isV.add(isVowel(ch));
+    i++;
+  }
+
+  // Find syllable boundaries between tokens
+  // A break point goes between token[j] and token[j+1]
+  Set<int> breaks = {};
+
+  // Walk through and find V-C...C-V patterns
+  for (int j = 0; j < tokens.length; j++) {
+    if (!isV[j]) continue; // find a vowel
+
+    // Collect consonants after this vowel
+    int cStart = j + 1;
+    int cEnd = cStart;
+    while (cEnd < tokens.length && !isV[cEnd]) {
+      cEnd++;
+    }
+    if (cEnd >= tokens.length) break; // no vowel after consonants
+    int numC = cEnd - cStart;
+    if (numC == 0) {
+      // Two vowels adjacent (not a diphthong) — break between them
+      breaks.add(cStart);
+    } else if (numC == 1) {
+      // V-C-V → break before C (C goes with next vowel)
+      breaks.add(cStart);
+    } else {
+      // Multiple consonants — find the split point
+      // Try giving as many consonants as possible to the next syllable
+      // by checking if they form a valid onset
+      int splitAt = cStart + 1; // default: first C goes left
+      for (int k = cStart; k < cEnd; k++) {
+        final cluster = tokens.sublist(k, cEnd).join().toLowerCase();
+        if (validOnsets.contains(cluster)) {
+          splitAt = k;
+          break;
+        }
+      }
+      // Don't split double consonants together — split between them
+      if (numC == 2 && tokens[cStart].toLowerCase() == tokens[cStart + 1].toLowerCase()) {
+        splitAt = cStart + 1;
+      }
+      if (splitAt > cStart && splitAt < cEnd) {
+        breaks.add(splitAt);
+      } else {
+        breaks.add(cStart); // fallback
+      }
+    }
+  }
+
+  // Don't leave a single character alone at start or end
+  breaks.remove(1); // don't break after first token if it's a single char
+  if (tokens.length > 1) {
+    breaks.remove(tokens.length - 1); // don't break before last token
+  }
+
+  // Build result with soft hyphens at break points
+  final buf = StringBuffer();
+  for (int j = 0; j < tokens.length; j++) {
+    if (breaks.contains(j)) buf.write('\u00AD');
+    buf.write(tokens[j]);
+  }
+  return buf.toString();
+}
+
 // 🔥 2. CHANGE TO CONSUMER STATEFUL WIDGET
 class BubblePage extends ConsumerStatefulWidget {
   final int lessonId;
@@ -36,7 +148,7 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
   final List<Map<String, dynamic>> _pendingUpdates = [];
 
   bool _isLoading = true;
-  double _userLearningRate = 2.5;
+  double _userLearningRate = 2.6;
 
   final FlutterTts _flutterTts = FlutterTts();
 
@@ -52,7 +164,6 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
   late final Animation<double> _scaleAnimation;
 
   late final AnimationController _sparkleController;
-  bool _showSparkles = false;
 
   late final AnimationController _shakeController;
   late final Animation<double> _shakeAnimation;
@@ -62,23 +173,31 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
   late final AnimationController _scoreController;
   late final Animation<double> _scoreBounce;
 
+  // Drag hint animation
+  late final AnimationController _hintController;
+  bool _showHint = false;
+  bool _hasTouched = false;   // user touched screen at all
+  bool _hasAnswered = false;  // user completed a drag answer
+  bool _hintGoingUp = true;   // alternates: up first, then down
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadSessionData();
 
-    // Pop animation - enhanced with spring curve
+    // Pop animation - smooth scale transition
     _popController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 400),
+      duration: const Duration(milliseconds: 250),
+      reverseDuration: const Duration(milliseconds: 200),
       value: 1.0,
     );
 
     _scaleAnimation = CurvedAnimation(
       parent: _popController,
-      curve: Curves.elasticOut,
-      reverseCurve: Curves.easeInBack,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeIn,
     );
 
     // Sparkle explosion animation
@@ -90,10 +209,10 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
     // Shake animation for wrong answers
     _shakeController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 500),
+      duration: const Duration(milliseconds: 400),
     );
     _shakeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _shakeController, curve: Curves.elasticIn)
+      CurvedAnimation(parent: _shakeController, curve: Curves.easeOut)
     );
 
     // Progress indicator animation
@@ -112,7 +231,40 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
       curve: Curves.elasticOut,
     );
 
+    // Drag hint — loops a finger-swipe-up animation
+    _hintController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    );
+    _hintController.addStatusListener((status) {
+      if (status == AnimationStatus.completed && _showHint && !_hasAnswered) {
+        // Alternate direction: up → down → up → down → ...
+        _hintGoingUp = !_hintGoingUp;
+        _hintController.forward(from: 0.0);
+      }
+    });
+
     _flutterTts.setLanguage(widget.sourceLanguage == 'en' ? "en-US" : "es-ES");
+  }
+
+  void _scheduleHint() {
+    if (_hasAnswered) return;
+    // 2s if never touched, 5s if touched but hasn't answered yet
+    final delay = _hasTouched ? 5 : 2;
+    Future.delayed(Duration(seconds: delay), () {
+      if (mounted && !_hasAnswered && !_isDragging && _currentIndex < _queue.length) {
+        _hintGoingUp = true; // always start with swipe-up
+        setState(() => _showHint = true);
+        _hintController.forward(from: 0.0);
+      }
+    });
+  }
+
+  void _cancelHint() {
+    if (_showHint) {
+      _hintController.stop();
+      setState(() => _showHint = false);
+    }
   }
 
   @override
@@ -125,6 +277,7 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _hintController.dispose();
     _popController.dispose();
     _sparkleController.dispose();
     _shakeController.dispose();
@@ -240,7 +393,10 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
 
       finalSelection.shuffle();
 
-      if (mounted) setState(() { _queue = finalSelection; _isLoading = false; });
+      if (mounted) {
+        setState(() { _queue = finalSelection; _isLoading = false; });
+        _scheduleHint();
+      }
     } catch (e) {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -302,12 +458,11 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
 
   void _handleAction({required bool isUp}) async {
     HapticFeedback.heavyImpact();
+    _hasAnswered = true;
+    _cancelHint();
 
     if (isUp) {
-      // Correct answer - sparkle explosion
-      _sparkleController.reset();
-      _sparkleController.forward();
-      setState(() => _showSparkles = true);
+      // Correct answer
     } else {
       // Wrong answer - shake animation
       _shakeController.reset();
@@ -327,7 +482,6 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
         _currentIndex++;
         _dragDistance = 0.0;
         _isDragging = false;
-        _showSparkles = false;
       });
       _popController.forward();
       if (_currentIndex >= _queue.length) _saveSessionToDB();
@@ -473,7 +627,8 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
     double progress = (_dragDistance.abs() / _triggerThreshold).clamp(0.0, 1.0);
     bool isUp = _dragDistance < 0;
     bool isDown = _dragDistance > 0;
-    String displayedText = _isDragging ? currentItem['reveal'] : currentItem['front'];
+    String rawText = _isDragging ? currentItem['reveal'] : currentItem['front'];
+    String displayedText = greekHyphenate(rawText);
 
     Color glowColor = isUp
       ? AppColors.success
@@ -492,6 +647,8 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
         behavior: HitTestBehavior.translucent, 
         onPanStart: (_) {
           HapticFeedback.selectionClick();
+          _hasTouched = true;
+          _cancelHint();
           setState(() => _isDragging = true);
         },
         onPanUpdate: (details) {
@@ -500,7 +657,11 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
         onPanEnd: (_) {
           if (_dragDistance <= -_triggerThreshold) _handleAction(isUp: true);
           else if (_dragDistance >= _triggerThreshold) _handleAction(isUp: false);
-          else setState(() { _dragDistance = 0.0; _isDragging = false; });
+          else {
+            setState(() { _dragDistance = 0.0; _isDragging = false; });
+            // Touched but didn't answer — reschedule hint with 5s delay
+            if (!_hasAnswered) _scheduleHint();
+          }
         },
         child: Stack(
           children: [
@@ -687,9 +848,72 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
                     ),  // Align
                     ),  // Positioned.fill
 
-                    // Sparkles (Overlay)
-                    if (_showSparkles)
-                      Positioned.fill(child: SparkleExplosion(controller: _sparkleController)),
+                    // (Sparkles removed)
+
+                    // Drag hint animation
+                    if (_showHint)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: AnimatedBuilder(
+                            animation: _hintController,
+                            builder: (context, _) {
+                              final t = _hintController.value;
+                              final goingUp = _hintGoingUp;
+                              // Movement: finger slides from center outward
+                              final yOffset = goingUp
+                                  ? 60.0 - (120.0 * t)   // upward
+                                  : -60.0 + (120.0 * t);  // downward
+                              // Fade in 0..0.2, visible 0.2..0.7, fade out 0.7..1.0
+                              double opacity;
+                              if (t < 0.2) {
+                                opacity = t / 0.2;
+                              } else if (t < 0.7) {
+                                opacity = 1.0;
+                              } else {
+                                opacity = 1.0 - ((t - 0.7) / 0.3);
+                              }
+                              final clampedOpacity = opacity.clamp(0.0, 1.0);
+                              // Target icon that appears at the destination
+                              final targetColor = goingUp ? AppColors.success : Colors.redAccent;
+                              final targetIcon = goingUp ? Icons.check_circle : Icons.cancel;
+                              final targetAlign = goingUp
+                                  ? const Alignment(0.0, -0.65)
+                                  : const Alignment(0.0, 0.55);
+                              return Stack(
+                                children: [
+                                  // Target icon (check/x) at top/bottom
+                                  Align(
+                                    alignment: targetAlign,
+                                    child: Opacity(
+                                      opacity: clampedOpacity * 0.5,
+                                      child: Icon(
+                                        targetIcon,
+                                        color: targetColor,
+                                        size: 48,
+                                      ),
+                                    ),
+                                  ),
+                                  // Finger swipe icon
+                                  Align(
+                                    alignment: const Alignment(0.0, 0.05),
+                                    child: Transform.translate(
+                                      offset: Offset(0, yOffset),
+                                      child: Opacity(
+                                        opacity: clampedOpacity * 0.7,
+                                        child: Icon(
+                                          goingUp ? Icons.swipe_up_rounded : Icons.swipe_down_rounded,
+                                          color: Colors.white,
+                                          size: 64,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
+                          ),
+                        ),
+                      ),
                  ],
                ),
              ),
@@ -773,8 +997,8 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
                     maxLines: 3,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      fontSize: r.fontSize(_isDragging ? 36 : 32),
-                      fontWeight: FontWeight.w800,
+                      fontSize: r.fontSize(32),
+                      fontWeight: FontWeight.w700,
                       color: Colors.white,
                       height: 1.2,
                       letterSpacing: 0.5,
@@ -908,7 +1132,7 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
           ],
         ),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Text(
               label.toUpperCase(),

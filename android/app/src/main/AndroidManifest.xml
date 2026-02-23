@@ -1,7 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+<uses-permission android:name="com.android.vending.BILLING" />
 
     <queries>
         <intent>
@@ -47,5 +49,13 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!-- OneSignal notification icon & accent color -->
+        <meta-data
+            android:name="com.onesignal.NotificationIcon"
+            android:resource="@drawable/notification_icon" />
+        <meta-data
+            android:name="com.onesignal.NotificationAccentColor"
+            android:value="FFFF9800" />
     </application>
 </manifest>

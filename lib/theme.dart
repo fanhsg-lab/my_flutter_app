@@ -22,7 +22,7 @@ class AppColors {
 // A ready-to-use Theme Data for your main.dart
 final ThemeData appTheme = ThemeData(
   brightness: Brightness.dark,
-  textTheme: GoogleFonts.outfitTextTheme(ThemeData.dark().textTheme),
+  textTheme: GoogleFonts.interTextTheme(ThemeData.dark().textTheme),
   primaryColor: AppColors.primary,
   scaffoldBackgroundColor: AppColors.background,
   
