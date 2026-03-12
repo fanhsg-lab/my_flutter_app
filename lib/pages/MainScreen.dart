@@ -141,7 +141,9 @@ class _MainScreenState extends State<MainScreen> {
 
   Future<void> _fetchDashboardData() async {
     try {
-      final data = await LocalDB.instance.getDashboardLessons();
+      final savedDirection = await LocalDB.instance.getWordDirection();
+      final isReversed = savedDirection == 'reverse';
+      final data = await LocalDB.instance.getDashboardLessons(isReversed: isReversed);
       final srcLang = await LocalDB.instance.getBookSourceLanguage();
       final bookId = await LocalDB.instance.getCurrentBookId();
       String bookTitle = '';
@@ -156,10 +158,13 @@ class _MainScreenState extends State<MainScreen> {
       }
       if (mounted) {
         final shortLabel = S.sourceLanguageShort(srcLang);
+        final directionLabel = isReversed
+            ? 'Gr -> $shortLabel'
+            : '$shortLabel -> Gr';
         setState(() {
           _lessons = data;
+          if (!_initialLoadDone || srcLang != _sourceLanguage) _selectedLanguage = directionLabel;
           _sourceLanguage = srcLang;
-          _selectedLanguage = 'Gr -> $shortLabel';
           _bookTitle = bookTitle;
           _bookLevel = bookLevel;
           _isLoading = false;
@@ -256,8 +261,10 @@ class _MainScreenState extends State<MainScreen> {
       debugPrint("🔥 Final Streak Calculation: $streak");
 
       // --- 4. STATS (Words Learned) ---
+      final isReversed = _selectedLanguage.startsWith('Gr');
+      final progressTable = isReversed ? 'user_progress' : 'user_progress_reverse';
       final learnedRes = await db.rawQuery(
-        "SELECT COUNT(*) FROM user_progress WHERE user_id = ? AND status IN ('learned', 'consolidating')",
+        "SELECT COUNT(*) FROM $progressTable WHERE user_id = ? AND status IN ('learned', 'consolidating')",
         [userId],
       );
       int learnedCount = Sqflite.firstIntValue(learnedRes) ?? 0;
@@ -277,27 +284,29 @@ class _MainScreenState extends State<MainScreen> {
     showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.cardColor,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
       builder: (context) {
-        return Padding(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(S.quickStats, style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 24),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: [
-                  _buildPopupStat(S.dayStreak, "$_streak", Colors.orange, HeroIcon(HeroIcons.fire, style: HeroIconStyle.solid, size: 32, color: Colors.orange)),
-                  Container(width: 1, height: 50, color: Colors.grey.shade800),
-                  _buildPopupStat(S.wordsLearned, "$_totalLearnedWords", AppColors.success, HeroIcon(HeroIcons.academicCap, style: HeroIconStyle.solid, size: 32, color: AppColors.success)),
-                ],
-              ),
-              const SizedBox(height: 24),
-              Text(S.keepGoing, style: const TextStyle(color: Colors.grey, fontSize: 14)),
-              const SizedBox(height: 10),
-            ],
+        return SafeArea(
+          child: SingleChildScrollView(
+            padding: EdgeInsets.fromLTRB(24, 24, 24, MediaQuery.of(context).viewInsets.bottom + 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(S.quickStats, style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    _buildPopupStat(S.dayStreak, "$_streak", Colors.orange, HeroIcon(HeroIcons.fire, style: HeroIconStyle.solid, size: 32, color: Colors.orange)),
+                    Container(width: 1, height: 50, color: Colors.grey.shade800),
+                    _buildPopupStat(S.wordsLearned, "$_totalLearnedWords", AppColors.success, HeroIcon(HeroIcons.academicCap, style: HeroIconStyle.solid, size: 32, color: AppColors.success)),
+                  ],
+                ),
+                const SizedBox(height: 24),
+                Text(S.keepGoing, style: const TextStyle(color: Colors.grey, fontSize: 14)),
+              ],
+            ),
           ),
         );
       }
@@ -875,40 +884,187 @@ class _MainScreenState extends State<MainScreen> {
                                 } else if (_selectedMode == 'Test') {
                                   route = MaterialPageRoute(builder: (context) => BubblePage(lessonId: selectedLesson.id, isReversed: isReversed, sourceLanguage: _sourceLanguage));
                                 } else if (_selectedMode == 'Survival') {
-                                  // Show mode selection dialog for Survival
-                                  final bool? isPracticeMode = await showDialog<bool>(
+                                  final db = await LocalDB.instance.database;
+                                  final countResult = await db.rawQuery(
+                                    'SELECT COUNT(*) as cnt FROM lesson_words WHERE lesson_id = ?',
+                                    [selectedLesson.id],
+                                  );
+                                  final totalWords = (countResult.first['cnt'] as int? ?? 20).clamp(1, 9999);
+                                  RangeValues _range = RangeValues(0, totalWords.toDouble());
+                                  bool _hardcore = false;
+                                  final RangeValues? picked = await showDialog<RangeValues>(
                                     context: context,
-                                    builder: (ctx) => AlertDialog(
-                                      backgroundColor: AppColors.cardColor,
-                                      title: Text(S.chooseMode, style: TextStyle(color: Colors.white, fontSize: r.fontSize(18))),
-                                      content: Column(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          ListTile(
-                                            leading: HeroIcon(HeroIcons.academicCap, color: AppColors.primary, size: r.iconSize(24), style: HeroIconStyle.outline),
-                                            title: Text(S.reviewMode, style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: r.fontSize(14))),
-                                            subtitle: Text(S.onlyDueWords, style: TextStyle(color: Colors.white70, fontSize: r.fontSize(12))),
-                                            onTap: () => Navigator.pop(ctx, false),
+                                    barrierColor: Colors.black87,
+                                    builder: (ctx) => StatefulBuilder(
+                                      builder: (ctx, setDialogState) {
+                                        final int wordCount = (_range.end - _range.start).round();
+                                        return Dialog(
+                                          backgroundColor: Colors.transparent,
+                                          insetPadding: EdgeInsets.symmetric(horizontal: r.spacing(24), vertical: r.spacing(40)),
+                                          child: Container(
+                                            decoration: BoxDecoration(
+                                              color: AppColors.cardColor,
+                                              borderRadius: BorderRadius.circular(r.radius(28)),
+                                              border: Border.all(color: Colors.white.withOpacity(0.08), width: 1),
+                                            ),
+                                            child: Column(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                // Header
+                                                Container(
+                                                  width: double.infinity,
+                                                  padding: EdgeInsets.symmetric(vertical: r.spacing(24), horizontal: r.spacing(24)),
+                                                  decoration: BoxDecoration(
+                                                    gradient: LinearGradient(
+                                                      colors: [AppColors.primary.withOpacity(0.12), Colors.transparent],
+                                                      begin: Alignment.topCenter,
+                                                      end: Alignment.bottomCenter,
+                                                    ),
+                                                    borderRadius: BorderRadius.vertical(top: Radius.circular(r.radius(28))),
+                                                  ),
+                                                  child: Column(
+                                                    children: [
+                                                      Text(S.survival, style: TextStyle(color: Colors.white, fontSize: r.fontSize(22), fontWeight: FontWeight.w900, letterSpacing: 0.5)),
+                                                    ],
+                                                  ),
+                                                ),
+
+                                                Padding(
+                                                  padding: EdgeInsets.symmetric(horizontal: r.spacing(24)),
+                                                  child: Column(
+                                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                                    children: [
+                                                      SizedBox(height: r.spacing(16)),
+                                                      // Word range display
+                                                      Row(
+                                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                                        children: [
+                                                          Text("Word range", style: TextStyle(color: Colors.white54, fontSize: r.fontSize(12))),
+                                                          Container(
+                                                            padding: EdgeInsets.symmetric(horizontal: r.spacing(10), vertical: r.spacing(4)),
+                                                            decoration: BoxDecoration(
+                                                              color: AppColors.primary.withOpacity(0.15),
+                                                              borderRadius: BorderRadius.circular(r.radius(20)),
+                                                              border: Border.all(color: AppColors.primary.withOpacity(0.3)),
+                                                            ),
+                                                            child: Text(
+                                                              "${_range.start.round()} – ${_range.end.round()}  •  $wordCount word${wordCount == 1 ? '' : 's'}",
+                                                              style: TextStyle(color: AppColors.primary, fontSize: r.fontSize(12), fontWeight: FontWeight.bold),
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                      SizedBox(height: r.spacing(4)),
+                                                      RangeSlider(
+                                                        values: _range,
+                                                        min: 0,
+                                                        max: totalWords.toDouble(),
+                                                        divisions: totalWords,
+                                                        activeColor: AppColors.primary,
+                                                        inactiveColor: Colors.white12,
+                                                        onChanged: (v) => setDialogState(() => _range = v),
+                                                      ),
+
+                                                      SizedBox(height: r.spacing(8)),
+                                                      // Hardcore toggle
+                                                      GestureDetector(
+                                                        onTap: () => setDialogState(() => _hardcore = !_hardcore),
+                                                        child: AnimatedContainer(
+                                                          duration: const Duration(milliseconds: 200),
+                                                          padding: EdgeInsets.symmetric(horizontal: r.spacing(16), vertical: r.spacing(12)),
+                                                          decoration: BoxDecoration(
+                                                            color: _hardcore ? Colors.redAccent.withOpacity(0.12) : Colors.white.withOpacity(0.04),
+                                                            borderRadius: BorderRadius.circular(r.radius(14)),
+                                                            border: Border.all(
+                                                              color: _hardcore ? Colors.redAccent.withOpacity(0.5) : Colors.white.withOpacity(0.08),
+                                                              width: 1.5,
+                                                            ),
+                                                          ),
+                                                          child: Row(
+                                                            children: [
+                                                              Text("💀", style: TextStyle(fontSize: r.fontSize(20))),
+                                                              SizedBox(width: r.spacing(12)),
+                                                              Expanded(
+                                                                child: Column(
+                                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                                  children: [
+                                                                    Text("Hardcore", style: TextStyle(color: _hardcore ? Colors.redAccent : Colors.white, fontSize: r.fontSize(14), fontWeight: FontWeight.bold)),
+                                                                    Text("Type freely — mistakes shown at end", style: TextStyle(color: Colors.white38, fontSize: r.fontSize(10))),
+                                                                  ],
+                                                                ),
+                                                              ),
+                                                              AnimatedContainer(
+                                                                duration: const Duration(milliseconds: 200),
+                                                                width: r.scale(22),
+                                                                height: r.scale(22),
+                                                                decoration: BoxDecoration(
+                                                                  shape: BoxShape.circle,
+                                                                  color: _hardcore ? Colors.redAccent : Colors.transparent,
+                                                                  border: Border.all(color: _hardcore ? Colors.redAccent : Colors.white38, width: 2),
+                                                                ),
+                                                                child: _hardcore ? Icon(Icons.check, color: Colors.white, size: r.scale(14)) : null,
+                                                              ),
+                                                            ],
+                                                          ),
+                                                        ),
+                                                      ),
+                                                      SizedBox(height: r.spacing(20)),
+                                                    ],
+                                                  ),
+                                                ),
+
+                                                // Buttons
+                                                Padding(
+                                                  padding: EdgeInsets.fromLTRB(r.spacing(24), 0, r.spacing(24), r.spacing(20)),
+                                                  child: Row(
+                                                    children: [
+                                                      Expanded(
+                                                        child: OutlinedButton(
+                                                          style: OutlinedButton.styleFrom(
+                                                            foregroundColor: Colors.white54,
+                                                            side: BorderSide(color: Colors.white12),
+                                                            padding: EdgeInsets.symmetric(vertical: r.spacing(13)),
+                                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(r.radius(12))),
+                                                          ),
+                                                          onPressed: () => Navigator.pop(ctx),
+                                                          child: Text(S.cancel, style: TextStyle(fontSize: r.fontSize(14))),
+                                                        ),
+                                                      ),
+                                                      SizedBox(width: r.spacing(12)),
+                                                      Expanded(
+                                                        flex: 2,
+                                                        child: ElevatedButton(
+                                                          style: ElevatedButton.styleFrom(
+                                                            backgroundColor: _hardcore ? Colors.redAccent : AppColors.primary,
+                                                            foregroundColor: Colors.white,
+                                                            padding: EdgeInsets.symmetric(vertical: r.spacing(13)),
+                                                            elevation: 0,
+                                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(r.radius(12))),
+                                                          ),
+                                                          onPressed: wordCount == 0 ? null : () => Navigator.pop(ctx, _range),
+                                                          child: Text(S.ok, style: TextStyle(fontSize: r.fontSize(14), fontWeight: FontWeight.bold)),
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
                                           ),
-                                          r.gapH(8),
-                                          ListTile(
-                                            leading: HeroIcon(HeroIcons.puzzlePiece, color: Colors.blue, size: r.iconSize(24), style: HeroIconStyle.outline),
-                                            title: Text(S.practiceMode, style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: r.fontSize(14))),
-                                            subtitle: Text(S.allWordsFromLesson, style: TextStyle(color: Colors.white70, fontSize: r.fontSize(12))),
-                                            onTap: () => Navigator.pop(ctx, true),
-                                          ),
-                                        ],
-                                      ),
+                                        );
+                                      },
                                     ),
                                   );
 
-                                  if (isPracticeMode != null) {
+                                  if (picked != null) {
                                     route = MaterialPageRoute(
                                       builder: (context) => SurvivalPage(
                                         lessonId: selectedLesson.id,
                                         isReversed: isReversed,
-                                        isPracticeMode: isPracticeMode,
+                                        wordRangeStart: picked.start.round(),
+                                        wordRangeEnd: picked.end.round(),
                                         sourceLanguage: _sourceLanguage,
+                                        isHardcore: _hardcore,
                                       )
                                     );
                                   }
@@ -932,6 +1088,95 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
+  void _showLibraryInfo(BuildContext ctx, Responsive r) {
+    showDialog(
+      context: ctx,
+      barrierColor: Colors.black87,
+      builder: (dialogContext) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: EdgeInsets.all(r.spacing(24)),
+        child: Container(
+          decoration: BoxDecoration(
+            color: AppColors.cardColor,
+            borderRadius: BorderRadius.circular(r.radius(24)),
+            border: Border.all(color: Colors.white.withOpacity(0.08), width: 1),
+          ),
+          child: SingleChildScrollView(
+            padding: EdgeInsets.all(r.spacing(24)),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Header
+                Row(
+                  children: [
+                    Container(
+                      padding: EdgeInsets.all(r.spacing(10)),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withOpacity(0.15),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Text('i', style: TextStyle(color: AppColors.primary, fontSize: r.fontSize(16), fontWeight: FontWeight.bold, fontStyle: FontStyle.italic)),
+                    ),
+                    SizedBox(width: r.spacing(12)),
+                    Text('Reading the Library', style: TextStyle(color: Colors.white, fontSize: r.fontSize(18), fontWeight: FontWeight.w800)),
+                  ],
+                ),
+                SizedBox(height: r.spacing(20)),
+                _infoSection(r, '📊', 'Lesson strength (e.g. 0.72)', 'The average memory strength of all words in the lesson. 0.00 = not studied, 1.00 = fully mastered. The higher it is, the better you know this lesson.'),
+                _infoSection(r, '⚫', 'New (grey)', 'Words you haven\'t studied at all yet.'),
+                _infoSection(r, '🔸', 'Learning (faded orange)', 'Words you\'ve seen but are still being drilled — not yet in spaced repetition.'),
+                _infoSection(r, '🔶', 'Due for review (medium orange)', 'Words in spaced repetition that are due — you need to review them again.'),
+                _infoSection(r, '🟠', 'Mastered (full orange)', 'Words not due yet — scheduled in the future. Same as the Mastered count on the lesson card.'),
+                _infoSection(r, '▬', 'Strength bar', 'The thin bar next to each word shows its individual strength. The colour matches the dot: grey → faded → medium → full orange.'),
+                _infoSection(r, '%', 'Accuracy', 'The small percentage under each word\'s bar shows how often you answered it correctly out of all attempts.'),
+                _infoSection(r, '⭕', 'Circle on lesson card', 'The big percentage in the circle = how many words in the lesson are Mastered. The thin inner arc shows words still in Review.'),
+                SizedBox(height: r.spacing(20)),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: Colors.black,
+                      padding: EdgeInsets.symmetric(vertical: r.spacing(14)),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(r.radius(14))),
+                      elevation: 0,
+                    ),
+                    onPressed: () => Navigator.pop(dialogContext),
+                    child: Text('Got it', style: TextStyle(fontSize: r.fontSize(15), fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _infoSection(Responsive r, String emoji, String title, String body) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: r.spacing(14)),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(emoji, style: TextStyle(fontSize: r.fontSize(18))),
+          SizedBox(width: r.spacing(12)),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: TextStyle(color: Colors.white, fontSize: r.fontSize(13), fontWeight: FontWeight.w700)),
+                SizedBox(height: r.spacing(2)),
+                Text(body, style: TextStyle(color: Colors.white54, fontSize: r.fontSize(12), height: 1.4)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildLibraryView() {
     final r = Responsive(context);
     return Scaffold(
@@ -946,8 +1191,18 @@ class _MainScreenState extends State<MainScreen> {
                   if (index == 0) {
                     return Padding(
                       padding: EdgeInsets.only(top: r.spacing(8), bottom: r.spacing(12)),
-                      child: Center(
-                        child: Text(S.libraryTitle.toUpperCase(), style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: r.fontSize(18), letterSpacing: 1.5)),
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          Text(S.libraryTitle.toUpperCase(), style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: r.fontSize(18), letterSpacing: 1.5)),
+                          Positioned(
+                            right: 0,
+                            child: GestureDetector(
+                              onTap: () => _showLibraryInfo(context, r),
+                              child: HeroIcon(HeroIcons.informationCircle, color: AppColors.primary, size: r.iconSize(18), style: HeroIconStyle.outline),
+                            ),
+                          ),
+                        ],
                       ),
                     );
                   }
@@ -970,7 +1225,13 @@ class _MainScreenState extends State<MainScreen> {
     final r = Responsive(context);
     bool isSelected = _selectedLanguage == label;
     return GestureDetector(
-      onTap: () => setState(() => _selectedLanguage = label),
+      onTap: () async {
+        setState(() => _selectedLanguage = label);
+        final isReversed = label.startsWith('Gr');
+        await LocalDB.instance.setWordDirection(isReversed ? 'reverse' : 'normal');
+        _fetchDashboardData();
+        LocalDB.instance.notifyDataChanged();
+      },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         padding: r.padding(horizontal: 20, vertical: 8),
@@ -1081,13 +1342,12 @@ class _MainScreenState extends State<MainScreen> {
             padding: r.padding(vertical: 12, horizontal: 16),
             decoration: BoxDecoration(color: Colors.black26, borderRadius: BorderRadius.circular(r.radius(16))),
             child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
-                _buildStatItem(lesson.learned, S.mastered, AppColors.primary),
+                Expanded(child: _buildStatItem(lesson.learned, S.mastered, AppColors.primary)),
                 Container(width: 1, height: r.scale(24), color: Colors.grey.shade800),
-                _buildStatItem(lesson.learning, S.review, AppColors.accent),
+                Expanded(child: _buildStatItem(lesson.learning, S.review, AppColors.accent)),
                 Container(width: 1, height: r.scale(24), color: Colors.grey.shade800),
-                _buildStatItem(lesson.unseen, S.newWord, Colors.grey)
+                Expanded(child: _buildStatItem(lesson.unseen, S.newWord, Colors.grey)),
               ]
             ),
           )
@@ -1221,7 +1481,7 @@ class _MainScreenState extends State<MainScreen> {
     final r = Responsive(context);
     return Column(children: [
       Text("$count", style: TextStyle(fontSize: r.fontSize(18), fontWeight: FontWeight.bold, color: color)),
-      Text(label, style: TextStyle(fontSize: r.fontSize(10), color: Colors.grey.shade400))
+      Text(label, style: TextStyle(fontSize: r.fontSize(10), color: Colors.grey.shade400), maxLines: 1, overflow: TextOverflow.ellipsis, textAlign: TextAlign.center),
     ]);
   }
   Widget _buildModeBtn(String key, String displayLabel, HeroIcons icon) {
@@ -1283,6 +1543,38 @@ class _LibraryLessonTileState extends State<_LibraryLessonTile> with SingleTicke
   List<Map<String, dynamic>>? _words;
   bool _isLoading = false;
   bool _isExpanded = false;
+  double? _avgStrength;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAvgStrength();
+  }
+
+  Future<void> _loadAvgStrength() async {
+    final db = await LocalDB.instance.database;
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId == null) return;
+
+    final direction = await LocalDB.instance.getWordDirection();
+    final progressTable = direction == 'reverse' ? 'user_progress' : 'user_progress_reverse';
+    final result = await db.rawQuery('''
+      SELECT AVG(up.strength) AS avg_strength,
+             COUNT(up.id) AS attempted
+      FROM lesson_words lw
+      JOIN words w ON w.id = lw.word_id
+      LEFT JOIN $progressTable up ON up.word_id = w.id AND up.user_id = ?
+      WHERE lw.lesson_id = ?
+    ''', [userId, widget.lessonId]);
+
+    if (result.isNotEmpty && mounted) {
+      final attempted = (result.first['attempted'] as num?)?.toInt() ?? 0;
+      if (attempted > 0) {
+        final avg = (result.first['avg_strength'] as num?)?.toDouble() ?? 0.0;
+        setState(() => _avgStrength = avg);
+      }
+    }
+  }
 
   Future<void> _loadWords() async {
     if (_words != null) return; // already loaded
@@ -1290,15 +1582,18 @@ class _LibraryLessonTileState extends State<_LibraryLessonTile> with SingleTicke
     final db = await LocalDB.instance.database;
     final userId = Supabase.instance.client.auth.currentUser?.id;
 
+    final direction = await LocalDB.instance.getWordDirection();
+    final progressTable = direction == 'reverse' ? 'user_progress' : 'user_progress_reverse';
     final rows = await db.rawQuery('''
       SELECT w.id, w.es, w.en,
              COALESCE(up.status, 'new') AS status,
              COALESCE(up.strength, 0.0) AS strength,
              COALESCE(up.total_attempts, 0) AS total_attempts,
-             COALESCE(up.total_correct, 0) AS total_correct
+             COALESCE(up.total_correct, 0) AS total_correct,
+             up.next_due_at
       FROM lesson_words lw
       JOIN words w ON w.id = lw.word_id
-      LEFT JOIN user_progress up ON up.word_id = w.id AND up.user_id = ?
+      LEFT JOIN $progressTable up ON up.word_id = w.id AND up.user_id = ?
       WHERE lw.lesson_id = ?
       ORDER BY w.id ASC
     ''', [userId ?? '', widget.lessonId]);
@@ -1359,9 +1654,28 @@ class _LibraryLessonTileState extends State<_LibraryLessonTile> with SingleTicke
                           widget.title,
                           style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: r.fontSize(14)),
                         ),
-                        Text(
-                          S.nWords(widget.wordCount),
-                          style: TextStyle(color: Colors.grey, fontSize: r.fontSize(11)),
+                        Row(
+                          children: [
+                            Text(
+                              S.nWords(widget.wordCount),
+                              style: TextStyle(color: Colors.grey, fontSize: r.fontSize(11)),
+                            ),
+                            if (_avgStrength != null) ...[
+                              Text('  ·  ', style: TextStyle(color: Colors.grey.shade700, fontSize: r.fontSize(11))),
+                              Text(
+                                _avgStrength!.toStringAsFixed(2),
+                                style: TextStyle(
+                                  color: _avgStrength! >= 0.75
+                                      ? AppColors.primary
+                                      : _avgStrength! >= 0.4
+                                          ? AppColors.primary.withOpacity(0.5)
+                                          : Colors.grey.shade500,
+                                  fontSize: r.fontSize(11),
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
                       ],
                     ),
@@ -1426,13 +1740,19 @@ class _LibraryLessonTileState extends State<_LibraryLessonTile> with SingleTicke
           final attempts = (word['total_attempts'] as int?) ?? 0;
           final correct = (word['total_correct'] as int?) ?? 0;
 
+          final nextDueRaw = word['next_due_at'];
+          final nextDue = nextDueRaw != null ? DateTime.tryParse(nextDueRaw as String)?.toUtc() : null;
+          final isDue = nextDue == null || nextDue.isBefore(DateTime.now().toUtc());
+
           final Color statusColor;
-          if (status == 'learned') {
-            statusColor = AppColors.primary;
+          if ((status == 'consolidating' || status == 'learned') && !isDue) {
+            statusColor = AppColors.primary;                        // bright orange = mastered
+          } else if (status == 'consolidating' && isDue) {
+            statusColor = AppColors.accent;                         // deep orange = due for review
           } else if (status == 'learning') {
-            statusColor = AppColors.accent;
+            statusColor = AppColors.primary.withOpacity(0.25);     // very faint = still learning
           } else {
-            statusColor = Colors.grey.shade700;
+            statusColor = Colors.grey.shade700;                     // grey = never seen
           }
 
           return Container(
@@ -1454,7 +1774,8 @@ class _LibraryLessonTileState extends State<_LibraryLessonTile> with SingleTicke
                       SizedBox(width: r.spacing(6)),
                       Expanded(
                         child: Text(
-                          word['es']?.toString() ?? '',
+                          // English books: en=English, es=Greek (swapped)
+                          word[widget.sourceLanguage == 'en' ? 'en' : 'es']?.toString() ?? '',
                           style: TextStyle(color: Colors.white, fontSize: r.fontSize(13)),
                         ),
                       ),
@@ -1464,8 +1785,11 @@ class _LibraryLessonTileState extends State<_LibraryLessonTile> with SingleTicke
                 Expanded(
                   flex: 4,
                   child: Text(
-                    word['en']?.toString() ?? '',
-                    style: TextStyle(color: Colors.white70, fontSize: r.fontSize(13)),
+                    word[widget.sourceLanguage == 'en' ? 'es' : 'en']?.toString() ?? '',
+                    style: TextStyle(
+                      color: status == 'new' ? Colors.grey.shade600 : Colors.white,
+                      fontSize: r.fontSize(13),
+                    ),
                   ),
                 ),
                 SizedBox(

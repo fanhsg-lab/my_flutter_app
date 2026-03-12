@@ -322,14 +322,15 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
     for (var update in batchToSave) {
       // 👇 REPLACE THIS BLOCK
       await LocalDB.instance.updateProgressLocal(
-        wordId: update['wordId'], 
-        status: update['status'], 
-        strength: update['strength'], 
-        nextDue: update['nextDue'], 
-        streak: update['streak'], 
-        totalAttempts: update['totalAttempts'], 
+        wordId: update['wordId'],
+        status: update['status'],
+        strength: update['strength'],
+        nextDue: update['nextDue'],
+        streak: update['streak'],
+        totalAttempts: update['totalAttempts'],
         totalCorrect: update['totalCorrect'],
         isCorrect: update['isCorrect'],
+        isReversed: widget.isReversed,
       );
     }
     
@@ -358,7 +359,8 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
         JOIN words w ON w.id = lw.word_id
         WHERE lw.lesson_id = ?
       ''', [widget.lessonId]);
-      final progressData = await db.query('user_progress', where: 'user_id = ?', whereArgs: [userId]);
+      final statsProgressTable = widget.isReversed ? 'user_progress_reverse' : 'user_progress';
+      final progressData = await db.query(statsProgressTable, where: 'user_id = ?', whereArgs: [userId]);
       final progressMap = { for (var p in progressData) p['word_id'] as int: p };
 
       int unseen = 0, due = 0, learning = 0;
@@ -417,7 +419,8 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
         WHERE lw.lesson_id = ?
         ORDER BY w.id ASC
       ''', [widget.lessonId]);
-      final progressData = await db.query('user_progress', where: 'user_id = ?', whereArgs: [userId]);
+      final progressTable = widget.isReversed ? 'user_progress_reverse' : 'user_progress';
+      final progressData = await db.query(progressTable, where: 'user_id = ?', whereArgs: [userId]);
       Map<int, Map<String, dynamic>> progressMap = { for (var p in progressData) p['word_id'] as int: p };
 
       List<Map<String, dynamic>> reviewQueue = []; 

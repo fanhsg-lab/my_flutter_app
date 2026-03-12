@@ -108,8 +108,10 @@ final statsProvider = FutureProvider<UserStats>((ref) async {
   // If filter == all, no word filter (show everything)
 
   // --- A. COUNTS & FORECAST ---
+  final direction = await LocalDB.instance.getWordDirection();
+  final progressTable = direction == 'reverse' ? 'user_progress' : 'user_progress_reverse';
   final allWords = await db.rawQuery('''
-    SELECT * FROM user_progress
+    SELECT * FROM $progressTable
     WHERE user_id = ? $wordFilter
   ''', [userId, ...wordFilterArgs]);
 

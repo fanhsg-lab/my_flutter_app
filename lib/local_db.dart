@@ -27,7 +27,7 @@ class LocalDB {
     final path = join(dbPath, filePath);
     return await openDatabase(
       path,
-      version: 7,  // Version 7 adds total_lessons to books
+      version: 8,  // Version 8 adds user_progress_reverse for bidirectional tracking
       onCreate: _createDB,
       onUpgrade: _upgradeDB,
       onOpen: _onOpen,
@@ -136,8 +136,26 @@ class LocalDB {
       )
     ''');
 
+    await db.execute('''
+      CREATE TABLE user_progress_reverse (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        word_id INTEGER NOT NULL,
+        status TEXT DEFAULT 'new',
+        strength REAL DEFAULT 1.0,
+        last_reviewed TEXT,
+        next_due_at TEXT,
+        consecutive_correct INTEGER DEFAULT 0,
+        total_attempts INTEGER DEFAULT 0,
+        total_correct INTEGER DEFAULT 0,
+        needs_sync INTEGER DEFAULT 0,
+        UNIQUE(user_id, word_id)
+      )
+    ''');
+
     // Indexes for performance
     await db.execute('CREATE INDEX idx_user_progress_user ON user_progress(user_id)');
+    await db.execute('CREATE INDEX idx_user_progress_reverse_user ON user_progress_reverse(user_id)');
     await db.execute('CREATE INDEX idx_attempt_logs_user ON attempt_logs(user_id)');
     await db.execute('CREATE INDEX idx_daily_stats_user_date ON daily_stats(user_id, date DESC)');
   }
@@ -326,10 +344,62 @@ class LocalDB {
         debugPrint("   ⚠️ Error during v7 migration: $e");
       }
     }
+
+    if (oldVersion < 8) {
+      debugPrint("🔧 Migrating database to v8 (adding user_progress_reverse for bidirectional tracking)");
+      try {
+        await db.execute('''
+          CREATE TABLE IF NOT EXISTS user_progress_reverse (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            word_id INTEGER NOT NULL,
+            status TEXT DEFAULT 'new',
+            strength REAL DEFAULT 1.0,
+            last_reviewed TEXT,
+            next_due_at TEXT,
+            consecutive_correct INTEGER DEFAULT 0,
+            total_attempts INTEGER DEFAULT 0,
+            total_correct INTEGER DEFAULT 0,
+            needs_sync INTEGER DEFAULT 0,
+            UNIQUE(user_id, word_id)
+          )
+        ''');
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_user_progress_reverse_user ON user_progress_reverse(user_id)');
+        await db.insert('app_meta', {'key': 'word_direction', 'value': 'normal'},
+            conflictAlgorithm: ConflictAlgorithm.ignore);
+        debugPrint("   ✅ Created user_progress_reverse table");
+      } catch (e) {
+        debugPrint("   ⚠️ Error during v8 migration: $e");
+      }
+    }
   }
 
   Future<void> _onOpen(Database db) async {
     await db.execute('CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)');
+  }
+
+  // =========================================================
+  // 🔀 DIRECTION HELPERS
+  // =========================================================
+
+  /// existing table (user_progress) = GR→ES (isReversed=true)
+  /// new table (user_progress_reverse) = ES→GR (isReversed=false)
+  String _progressTable(bool isReversed) =>
+      isReversed ? 'user_progress' : 'user_progress_reverse';
+
+  String _supabaseProgressTable(bool isReversed) =>
+      isReversed ? 'user_word_progress' : 'user_word_progress_reverse';
+
+  Future<String> getWordDirection() async {
+    final db = await database;
+    final res = await db.query('app_meta', where: 'key = ?', whereArgs: ['word_direction']);
+    return res.isNotEmpty ? res.first['value'] as String : 'normal';
+  }
+
+  Future<void> setWordDirection(String direction) async {
+    final db = await database;
+    await db.insert('app_meta', {'key': 'word_direction', 'value': direction},
+        conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   // =========================================================
@@ -425,21 +495,23 @@ class LocalDB {
         }
 
         // 3.5 CLEAN UP orphaned progress (word_ids that no longer exist after dedup)
-        // Only run on version change, NOT on teacher switch (teacher switch just changes local scope)
+        // Only run on version change, NOT on teacher switch
         if (!teacherChanged) {
-          final orphaned = await db.rawQuery('''
-            SELECT up.word_id FROM user_progress up
-            LEFT JOIN words w ON w.id = up.word_id
-            WHERE w.id IS NULL AND up.user_id = ?
-          ''', [userId]);
-          if (orphaned.isNotEmpty) {
-            final orphanIds = orphaned.map((r) => r['word_id']).toList();
-            debugPrint("🧹 Cleaning ${orphanIds.length} orphaned progress records");
-            final placeholders = orphanIds.map((_) => '?').join(',');
-            await db.rawDelete(
-              'DELETE FROM user_progress WHERE word_id IN ($placeholders) AND user_id = ?',
-              [...orphanIds, userId],
-            );
+          for (final table in ['user_progress', 'user_progress_reverse']) {
+            final orphaned = await db.rawQuery('''
+              SELECT up.word_id FROM $table up
+              LEFT JOIN words w ON w.id = up.word_id
+              WHERE w.id IS NULL AND up.user_id = ?
+            ''', [userId]);
+            if (orphaned.isNotEmpty) {
+              final orphanIds = orphaned.map((r) => r['word_id']).toList();
+              debugPrint("🧹 Cleaning ${orphanIds.length} orphaned records from $table");
+              final placeholders = orphanIds.map((_) => '?').join(',');
+              await db.rawDelete(
+                'DELETE FROM $table WHERE word_id IN ($placeholders) AND user_id = ?',
+                [...orphanIds, userId],
+              );
+            }
           }
         }
       } else {
@@ -472,50 +544,53 @@ class LocalDB {
 
   Future<void> _pushPendingData(Database db, SupabaseClient supabase, String userId) async {
     try {
-      // Upload Progress — only for word_ids that still exist in local words table
-      final unsyncedProgress = await db.rawQuery('''
-        SELECT up.* FROM user_progress up
-        INNER JOIN words w ON w.id = up.word_id
-        WHERE up.user_id = ? AND up.needs_sync = 1
-      ''', [userId]);
+      // Upload progress for both directions
+      for (final isReversed in [false, true]) {
+        final localTable = _progressTable(isReversed);
+        final supaTable = _supabaseProgressTable(isReversed);
 
-      if (unsyncedProgress.isNotEmpty) {
-        debugPrint("☁️ Uploading ${unsyncedProgress.length} progress records...");
+        final unsyncedProgress = await db.rawQuery('''
+          SELECT up.* FROM $localTable up
+          INNER JOIN words w ON w.id = up.word_id
+          WHERE up.user_id = ? AND up.needs_sync = 1
+        ''', [userId]);
 
-        // Batch upserts in groups of 100
-        const int batchSize = 100;
-        for (var i = 0; i < unsyncedProgress.length; i += batchSize) {
-          final end = (i + batchSize < unsyncedProgress.length) ? i + batchSize : unsyncedProgress.length;
-          final batch = unsyncedProgress.sublist(i, end);
+        if (unsyncedProgress.isNotEmpty) {
+          debugPrint("☁️ Uploading ${unsyncedProgress.length} ${isReversed ? 'reverse' : 'normal'} progress records...");
 
-          final progressPayload = batch.map((row) => {
-            'user_id': userId,
-            'word_id': row['word_id'],
-            'status': row['status'],
-            'strength': row['strength'],
-            'consecutive_correct': row['consecutive_correct'],
-            'next_due_at': row['next_due_at'],
-            'last_reviewed': row['last_reviewed'],
-            'total_attempts': row['total_attempts'],
-            'total_correct': row['total_correct'],
-          }).toList();
+          const int batchSize = 100;
+          for (var i = 0; i < unsyncedProgress.length; i += batchSize) {
+            final end = (i + batchSize < unsyncedProgress.length) ? i + batchSize : unsyncedProgress.length;
+            final batch = unsyncedProgress.sublist(i, end);
 
-          await supabase.from('user_word_progress').upsert(
-            progressPayload,
-            onConflict: 'user_id, word_id'
+            final progressPayload = batch.map((row) => {
+              'user_id': userId,
+              'word_id': row['word_id'],
+              'status': row['status'],
+              'strength': row['strength'],
+              'consecutive_correct': row['consecutive_correct'],
+              'next_due_at': row['next_due_at'],
+              'last_reviewed': row['last_reviewed'],
+              'total_attempts': row['total_attempts'],
+              'total_correct': row['total_correct'],
+            }).toList();
+
+            await supabase.from(supaTable).upsert(
+              progressPayload,
+              onConflict: 'user_id, word_id'
+            );
+          }
+
+          await db.update(
+            localTable,
+            {'needs_sync': 0},
+            where: 'user_id = ? AND needs_sync = 1',
+            whereArgs: [userId]
           );
         }
-
-        // Mark as synced
-        await db.update(
-          'user_progress',
-          {'needs_sync': 0},
-          where: 'user_id = ? AND needs_sync = 1',
-          whereArgs: [userId]
-        );
       }
 
-      // NEW: Aggregate attempt logs into daily_stats instead of syncing individual logs
+      // Aggregate attempt logs into daily_stats
       await _aggregateAndSyncDailyStats(db, supabase, userId);
 
     } catch (e) {
@@ -882,72 +957,75 @@ class LocalDB {
 
   Future<void> _pullProgress(Database db, SupabaseClient supabase, String userId) async {
     try {
-      // Download with pagination (Supabase default limit is 1000)
-      List<dynamic> remoteProgress = [];
-      int pageStart = 0;
-      const int pageLimit = 1000;
-      bool more = true;
+      // Pull both directions
+      for (final isReversed in [false, true]) {
+        final localTable = _progressTable(isReversed);
+        final supaTable = _supabaseProgressTable(isReversed);
 
-      while (more) {
-        final page = await supabase
-          .from('user_word_progress')
-          .select()
-          .eq('user_id', userId)
-          .range(pageStart, pageStart + pageLimit - 1);
-        remoteProgress.addAll(page);
-        if (page.length < pageLimit) {
-          more = false;
-        } else {
-          pageStart += pageLimit;
+        List<dynamic> remoteProgress = [];
+        int pageStart = 0;
+        const int pageLimit = 1000;
+        bool more = true;
+
+        while (more) {
+          final page = await supabase
+            .from(supaTable)
+            .select()
+            .eq('user_id', userId)
+            .range(pageStart, pageStart + pageLimit - 1);
+          remoteProgress.addAll(page);
+          if (page.length < pageLimit) {
+            more = false;
+          } else {
+            pageStart += pageLimit;
+          }
         }
-      }
 
-      if (remoteProgress.isNotEmpty) {
-        debugPrint("📥 Downloading ${remoteProgress.length} progress records");
-        final batch = db.batch();
-        final List<Map<String, dynamic>> needsStatusFix = [];
-        for (var p in remoteProgress) {
-          String status = p['status'] ?? 'new';
-          final int attempts = p['total_attempts'] ?? 0;
+        if (remoteProgress.isNotEmpty) {
+          debugPrint("📥 Downloading ${remoteProgress.length} ${isReversed ? 'reverse' : 'normal'} progress records");
+          final batch = db.batch();
+          final List<Map<String, dynamic>> needsStatusFix = [];
+          for (var p in remoteProgress) {
+            String status = p['status'] ?? 'new';
+            final int attempts = p['total_attempts'] ?? 0;
 
-          // Auto-correct: status='new' but has attempts means data is inconsistent
-          if (status == 'new' && attempts > 0) {
-            status = 'learning';
-            needsStatusFix.add({
+            if (status == 'new' && attempts > 0) {
+              status = 'learning';
+              needsStatusFix.add({
+                'user_id': userId,
+                'word_id': p['word_id'],
+                'status': status,
+                'strength': p['strength'] ?? 1.0,
+                'consecutive_correct': p['consecutive_correct'] ?? 0,
+                'next_due_at': p['next_due_at'],
+                'last_reviewed': p['last_reviewed'],
+                'total_attempts': attempts,
+                'total_correct': p['total_correct'] ?? 0,
+              });
+            }
+
+            batch.insert(localTable, {
               'user_id': userId,
               'word_id': p['word_id'],
               'status': status,
               'strength': p['strength'] ?? 1.0,
-              'consecutive_correct': p['consecutive_correct'] ?? 0,
-              'next_due_at': p['next_due_at'],
               'last_reviewed': p['last_reviewed'],
+              'next_due_at': p['next_due_at'],
+              'consecutive_correct': p['consecutive_correct'] ?? 0,
               'total_attempts': attempts,
               'total_correct': p['total_correct'] ?? 0,
-            });
+              'needs_sync': needsStatusFix.isNotEmpty && needsStatusFix.last['word_id'] == p['word_id'] ? 1 : 0
+            }, conflictAlgorithm: ConflictAlgorithm.replace);
           }
+          await batch.commit(noResult: true);
 
-          batch.insert('user_progress', {
-            'user_id': userId,
-            'word_id': p['word_id'],
-            'status': status,
-            'strength': p['strength'] ?? 1.0,
-            'last_reviewed': p['last_reviewed'],
-            'next_due_at': p['next_due_at'],
-            'consecutive_correct': p['consecutive_correct'] ?? 0,
-            'total_attempts': attempts,
-            'total_correct': p['total_correct'] ?? 0,
-            'needs_sync': needsStatusFix.isNotEmpty && needsStatusFix.last['word_id'] == p['word_id'] ? 1 : 0
-          }, conflictAlgorithm: ConflictAlgorithm.replace);
-        }
-        await batch.commit(noResult: true);
-
-        // Push auto-fixed statuses back to Supabase so it stays consistent
-        if (needsStatusFix.isNotEmpty) {
-          debugPrint("   🔧 Pushing ${needsStatusFix.length} auto-fixed statuses back to Supabase");
-          await supabase.from('user_word_progress').upsert(
-            needsStatusFix,
-            onConflict: 'user_id, word_id'
-          );
+          if (needsStatusFix.isNotEmpty) {
+            debugPrint("   🔧 Pushing ${needsStatusFix.length} auto-fixed statuses back to $supaTable");
+            await supabase.from(supaTable).upsert(
+              needsStatusFix,
+              onConflict: 'user_id, word_id'
+            );
+          }
         }
       }
     } catch (e) {
@@ -1019,7 +1097,8 @@ class LocalDB {
     required int streak,
     required int totalAttempts,
     required int totalCorrect,
-    required bool isCorrect
+    required bool isCorrect,
+    bool isReversed = false,
   }) async {
     final db = await instance.database;
     final userId = Supabase.instance.client.auth.currentUser?.id;
@@ -1029,9 +1108,11 @@ class LocalDB {
       return;
     }
 
+    final table = _progressTable(isReversed);
+
     try {
-      // Save progress
-      await db.insert('user_progress', {
+      // Save progress to correct directional table
+      await db.insert(table, {
         'user_id': userId,
         'word_id': wordId,
         'status': status,
@@ -1044,14 +1125,14 @@ class LocalDB {
         'needs_sync': 1
       }, conflictAlgorithm: ConflictAlgorithm.replace);
 
-      // Log attempt
+      // Log attempt (shared — direction-agnostic)
       await db.insert('attempt_logs', {
         'user_id': userId,
         'word_id': wordId,
         'correct': isCorrect ? 1 : 0,
         'attempted_at': DateTime.now().toUtc().toIso8601String(),
         'synced': 0
-      }, conflictAlgorithm: ConflictAlgorithm.ignore);  // Ignore duplicates
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
 
     } catch (e) {
       debugPrint("❌ Failed to save progress: $e");
@@ -1176,7 +1257,7 @@ class LocalDB {
     }
   }
 
-  Future<List<LessonData>> getDashboardLessons() async {
+  Future<List<LessonData>> getDashboardLessons({bool isReversed = false}) async {
     final db = await instance.database;
     final userId = Supabase.instance.client.auth.currentUser?.id;
 
@@ -1185,6 +1266,8 @@ class LocalDB {
       return [];
     }
 
+    final progressTable = _progressTable(isReversed);
+
     try {
       final now = DateTime.now();
       final todayMidnight = DateTime(now.year, now.month, now.day);
@@ -1192,8 +1275,6 @@ class LocalDB {
       // Get current book selection (filter lessons by book)
       final currentBookId = await getCurrentBookId();
 
-      // OPTIMIZED: Single query to get ALL lessons with their words and progress
-      // Instead of N+1 queries (one per lesson), we now use 1 query for everything
       final String bookFilter = currentBookId != null ? 'AND l.book_id = ?' : '';
       final List<Object?> queryArgs = currentBookId != null
           ? [userId, currentBookId]
@@ -1210,7 +1291,7 @@ class LocalDB {
         FROM lessons l
         LEFT JOIN lesson_words lw ON lw.lesson_id = l.id
         LEFT JOIN words w ON w.id = lw.word_id
-        LEFT JOIN user_progress up ON w.id = up.word_id AND up.user_id = ?
+        LEFT JOIN $progressTable up ON w.id = up.word_id AND up.user_id = ?
         WHERE 1=1 $bookFilter
         ORDER BY l.chapter_number ASC, w.id ASC
       ''', queryArgs);
