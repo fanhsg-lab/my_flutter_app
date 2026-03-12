@@ -155,10 +155,16 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
   int _currentIndex = 0;
   int _sessionCorrect = 0;
   int _sessionWrong = 0;
+  int _totalWordsInLesson = 0;
+  int _wordsUnseen = 0;
+  int _wordsDue = 0;
+  int _wordsLearning = 0;
+  int _wordsMastered = 0;
 
   double _dragDistance = 0.0;
   final double _triggerThreshold = 150.0;
   bool _isDragging = false;
+  bool _soundEnabled = true;
 
   late final AnimationController _popController;
   late final Animation<double> _scaleAnimation;
@@ -244,7 +250,21 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
       }
     });
 
-    _flutterTts.setLanguage(widget.sourceLanguage == 'en' ? "en-US" : "es-ES");
+    _initTts();
+  }
+
+  Future<void> _initTts() async {
+    try {
+      await _flutterTts.setLanguage(widget.sourceLanguage == 'en' ? "en-US" : "es-ES");
+      await _flutterTts.setVolume(1.0);
+      await _flutterTts.setSpeechRate(0.5);
+      await _flutterTts.setPitch(1.0);
+      _flutterTts.setErrorHandler((msg) {
+        debugPrint("TTS error: $msg");
+      });
+    } catch (e) {
+      debugPrint("TTS init error: $e");
+    }
   }
 
   void _scheduleHint() {
@@ -322,8 +342,51 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
     });
 
     // 3. Update UI immediately
-    ref.invalidate(statsProvider); 
+    ref.invalidate(statsProvider);
     LocalDB.instance.notifyDataChanged();
+
+    // 4. Refresh lesson state stats so finished screen shows post-session counts
+    await _refreshFinishedStats();
+  }
+
+  Future<void> _refreshFinishedStats() async {
+    try {
+      final db = await LocalDB.instance.database;
+      final userId = Supabase.instance.client.auth.currentUser?.id ?? 'unknown';
+      final wordsData = await db.rawQuery('''
+        SELECT w.id FROM lesson_words lw
+        JOIN words w ON w.id = lw.word_id
+        WHERE lw.lesson_id = ?
+      ''', [widget.lessonId]);
+      final progressData = await db.query('user_progress', where: 'user_id = ?', whereArgs: [userId]);
+      final progressMap = { for (var p in progressData) p['word_id'] as int: p };
+
+      int unseen = 0, due = 0, learning = 0;
+      final now = DateTime.now().toUtc();
+
+      for (var word in wordsData) {
+        final wordId = word['id'] as int;
+        final progress = progressMap[wordId];
+        final status = progress?['status'] as String? ?? 'new';
+        final nextDueRaw = progress?['next_due_at'];
+        final nextDue = nextDueRaw != null ? DateTime.parse(nextDueRaw as String).toUtc() : null;
+        final isTimeUp = nextDue == null || nextDue.isBefore(now);
+
+        if (status == 'learning') learning++;
+        else if ((status == 'consolidating' || status == 'learned') && isTimeUp) due++;
+        else if (status == 'new' || progress == null) unseen++;
+      }
+
+      final mastered = wordsData.length - unseen - due - learning;
+      if (mounted) {
+        setState(() {
+          _wordsUnseen = unseen;
+          _wordsDue = due;
+          _wordsLearning = learning;
+          _wordsMastered = mastered;
+        });
+      }
+    } catch (_) {}
   }
 
   void _restartSession() async {
@@ -347,13 +410,14 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
   Future<void> _loadSessionData() async {
     try {
       final db = await LocalDB.instance.database;
+      final userId = Supabase.instance.client.auth.currentUser?.id ?? 'unknown';
       final wordsData = await db.rawQuery('''
         SELECT w.* FROM lesson_words lw
         JOIN words w ON w.id = lw.word_id
         WHERE lw.lesson_id = ?
         ORDER BY w.id ASC
       ''', [widget.lessonId]);
-      final progressData = await db.query('user_progress');
+      final progressData = await db.query('user_progress', where: 'user_id = ?', whereArgs: [userId]);
       Map<int, Map<String, dynamic>> progressMap = { for (var p in progressData) p['word_id'] as int: p };
 
       List<Map<String, dynamic>> reviewQueue = []; 
@@ -361,12 +425,21 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
       List<Map<String, dynamic>> newQueue = []; 
       DateTime now = DateTime.now().toUtc();
 
+      debugPrint('🃏 Bubble load — lessonId=${widget.lessonId}, total words=${wordsData.length}');
       for (var word in wordsData) {
         int wordId = word['id'] as int;
         var progress = progressMap[wordId];
         String status = progress?['status'] as String? ?? 'new';
         DateTime? nextDue = progress?['next_due_at'] != null ? DateTime.parse(progress!['next_due_at'] as String).toUtc() : null;
         bool isTimeUp = nextDue == null || nextDue.isBefore(now);
+
+        String bucket;
+        if (status == 'learning') bucket = 'learningQueue';
+        else if ((status == 'consolidating' || status == 'learned') && isTimeUp) bucket = 'reviewQueue';
+        else if (status == 'new' || progress == null) bucket = 'newQueue';
+        else bucket = 'SKIPPED (mastered, not due until ${nextDue?.toLocal()})';
+
+        debugPrint('   word $wordId [${word['es']}/${word['en']}] status=$status isTimeUp=$isTimeUp → $bucket');
 
         Map<String, dynamic> item = {
           'word_id': wordId,
@@ -383,7 +456,15 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
         if (status == 'learning') learningQueue.add(item);
         else if ((status == 'consolidating' || status == 'learned') && isTimeUp) reviewQueue.add(item);
         else if (status == 'new' || progress == null) newQueue.add(item);
+        // else: consolidating/learned but not yet due — skipped
       }
+
+      // Snapshot lesson state before selection consumes the queues
+      final int snapshotUnseen = newQueue.length;
+      final int snapshotDue = reviewQueue.length;
+      final int snapshotLearning = learningQueue.length;
+      // mastered = total − the three above (consolidating/learned but not yet due)
+      final int snapshotMastered = wordsData.length - snapshotUnseen - snapshotDue - snapshotLearning;
 
       List<Map<String, dynamic>> finalSelection = [];
       while (finalSelection.length < 8 && reviewQueue.isNotEmpty) finalSelection.add(reviewQueue.removeAt(0));
@@ -393,8 +474,21 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
 
       finalSelection.shuffle();
 
+      debugPrint('🎯 Final selection (${finalSelection.length} words):');
+      for (var item in finalSelection) {
+        debugPrint('   → word ${item['word_id']} [${item['front']}/${item['reveal']}] status=${item['status']}');
+      }
+
       if (mounted) {
-        setState(() { _queue = finalSelection; _isLoading = false; });
+        setState(() {
+          _queue = finalSelection;
+          _totalWordsInLesson = wordsData.length;
+          _wordsUnseen = snapshotUnseen;
+          _wordsDue = snapshotDue;
+          _wordsLearning = snapshotLearning;
+          _wordsMastered = snapshotMastered;
+          _isLoading = false;
+        });
         _scheduleHint();
       }
     } catch (e) {
@@ -494,9 +588,34 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
     return _queue[_currentIndex];
   }
 
+  String _stripArticle(String text) {
+    const articles = ['el ', 'la ', 'los ', 'las ', 'un ', 'una ', 'unos ', 'unas '];
+    final lower = text.toLowerCase();
+    for (final article in articles) {
+      if (lower.startsWith(article)) return text.substring(article.length).trim();
+    }
+    return text;
+  }
+
   Future<void> _speak() async {
-    String text = widget.isReversed ? currentItem['reveal'] : currentItem['front'];
-    if (text.isNotEmpty && text != S.finished) await _flutterTts.speak(text);
+    // Always speak the source-language word (not Greek).
+    // English books have swapped columns, so the speak logic is inverted.
+    final bool speakReveal = widget.sourceLanguage == 'en' ? !widget.isReversed : widget.isReversed;
+    String text = speakReveal ? currentItem['reveal'] : currentItem['front'];
+    text = _stripArticle(text);
+    if (text.isNotEmpty && text != S.finished) {
+      try { await _flutterTts.speak(text); } catch (e) { debugPrint("TTS speak error: $e"); }
+    }
+  }
+
+  Future<void> _autoSpeak(Map<String, dynamic> item) async {
+    if (!_soundEnabled) return;
+    final bool speakReveal = widget.sourceLanguage == 'en' ? !widget.isReversed : widget.isReversed;
+    String text = speakReveal ? item['reveal'] : item['front'];
+    text = _stripArticle(text);
+    if (text.isNotEmpty && text != S.finished) {
+      try { await _flutterTts.speak(text); } catch (e) { debugPrint("TTS speak error: $e"); }
+    }
   }
 
   @override
@@ -505,10 +624,6 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
 
     // --- FINISHED SCREEN ---
     if (_currentIndex >= _queue.length) {
-      final accuracy = _sessionCorrect + _sessionWrong > 0
-          ? (_sessionCorrect / (_sessionCorrect + _sessionWrong) * 100).round()
-          : 0;
-
       return Scaffold(
         backgroundColor: AppColors.background,
         body: Stack(
@@ -565,16 +680,18 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
 
                   const SizedBox(height: 20),
 
-                  // Stats row
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      _buildStatCard(S.correct, _sessionCorrect, AppColors.success),
-                      const SizedBox(width: 20),
-                      _buildStatCard(S.review, _sessionWrong, Colors.redAccent),
-                      const SizedBox(width: 20),
-                      _buildStatCard(S.accuracy, accuracy, AppColors.primary, suffix: "%"),
-                    ],
+                  // Lesson state stats
+                  Center(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(width: 80, child: Center(child: _buildStatCard(S.newUpper, _wordsUnseen, AppColors.primary))),
+                        const SizedBox(width: 20),
+                        SizedBox(width: 80, child: Center(child: _buildStatCard(S.review, _wordsDue + _wordsLearning, Colors.redAccent))),
+                        const SizedBox(width: 20),
+                        SizedBox(width: 80, child: Center(child: _buildStatCard(S.masteredUpper, _wordsMastered, AppColors.success))),
+                      ],
+                    ),
                   ),
 
                   const SizedBox(height: 50),
@@ -650,6 +767,7 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
           _hasTouched = true;
           _cancelHint();
           setState(() => _isDragging = true);
+          _autoSpeak(currentItem);
         },
         onPanUpdate: (details) {
           setState(() => _dragDistance += details.delta.dy);
@@ -674,7 +792,7 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
                     _buildTarget(Alignment.topCenter, HeroIcons.checkCircle, AppColors.success, isUp ? progress : 0.0),
                     _buildTarget(Alignment.bottomCenter, HeroIcons.xCircle, Colors.redAccent, isDown ? progress : 0.0),
                     
-                    // Sound Button (Top Left)
+                    // Sound Toggle Button (Top Left)
                     Builder(
                       builder: (context) {
                         final r = Responsive(context);
@@ -683,10 +801,15 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
                           left: r.spacing(20),
                           child: FloatingActionButton.small(
                             heroTag: "speak",
-                            backgroundColor: AppColors.primary,
+                            backgroundColor: _soundEnabled ? AppColors.primary : Colors.white24,
                             elevation: 4,
-                            onPressed: _speak,
-                            child: HeroIcon(HeroIcons.speakerWave, color: Colors.black, size: r.iconSize(24), style: HeroIconStyle.solid),
+                            onPressed: () => setState(() => _soundEnabled = !_soundEnabled),
+                            child: HeroIcon(
+                              _soundEnabled ? HeroIcons.speakerWave : HeroIcons.speakerXMark,
+                              color: _soundEnabled ? Colors.black : Colors.white54,
+                              size: r.iconSize(24),
+                              style: HeroIconStyle.solid,
+                            ),
                           ),
                         );
                       }
@@ -1068,48 +1191,34 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
 
   Widget _buildStatCard(String label, int value, Color color, {String suffix = ""}) {
     final r = Responsive(context);
-    return Container(
-      padding: r.padding(horizontal: 20, vertical: 16),
-      decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.4),
-        borderRadius: BorderRadius.circular(r.radius(16)),
-        border: Border.all(color: color.withOpacity(0.5), width: 2),
-        boxShadow: [
-          BoxShadow(
-            color: color.withOpacity(0.2),
-            blurRadius: 15,
-            spreadRadius: 2,
-          )
-        ],
-      ),
-      child: Column(
-        children: [
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: r.fontSize(11),
-              fontWeight: FontWeight.bold,
-              color: Colors.grey.shade400,
-              letterSpacing: 1.0,
-            ),
+    return Column(
+      children: [
+        TweenAnimationBuilder<double>(
+          tween: Tween<double>(begin: 0, end: value.toDouble()),
+          duration: const Duration(milliseconds: 700),
+          curve: Curves.easeOut,
+          builder: (context, animVal, _) {
+            return Text(
+              '${animVal.round()}$suffix',
+              style: TextStyle(
+                fontSize: r.fontSize(28),
+                fontWeight: FontWeight.w900,
+                color: Colors.white,
+              ),
+            );
+          },
+        ),
+        const SizedBox(height: 4),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: r.fontSize(11),
+            fontWeight: FontWeight.w500,
+            color: Colors.white54,
+            letterSpacing: 0.8,
           ),
-          r.gapH(8),
-          Text(
-            "$value$suffix",
-            style: TextStyle(
-              fontSize: r.fontSize(28),
-              fontWeight: FontWeight.w900,
-              color: color,
-              shadows: [
-                Shadow(
-                  color: color.withOpacity(0.5),
-                  blurRadius: 8,
-                )
-              ],
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -1178,6 +1287,7 @@ class _BubbleBathBackgroundState extends State<BubbleBathBackground>
   final List<_FloatingBubble> _bubbles = [];
   final math.Random _rng = math.Random();
   int _spawnCounter = 0;
+  DateTime? _lastTick;
 
   @override
   void initState() {
@@ -1218,6 +1328,9 @@ class _BubbleBathBackgroundState extends State<BubbleBathBackground>
     if (!mounted) return;
     final size = MediaQuery.of(context).size;
     final now = DateTime.now();
+    final elapsed = _lastTick != null ? now.difference(_lastTick!).inMilliseconds : 16;
+    final dt = (elapsed / 16.0).clamp(0.5, 3.0);
+    _lastTick = now;
 
     // Spawn new bubbles periodically
     _spawnCounter++;
@@ -1254,13 +1367,13 @@ class _BubbleBathBackgroundState extends State<BubbleBathBackground>
         final age = now.difference(b.birthTime).inMilliseconds / 1000.0;
 
         if (b.popped) {
-          b.popProgress += 0.06;
+          b.popProgress += 0.06 * dt;
           if (b.popProgress >= 1.0) {
             _bubbles.removeAt(i);
             continue;
           }
         } else {
-          b.y -= b.speed;
+          b.y -= b.speed * dt;
           b.x += math.sin(age * b.wobbleSpeed + b.phase) * 0.8;
 
           if (b.y < size.height * b.popAt) {

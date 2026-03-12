@@ -1,7 +1,5 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_tts/flutter_tts.dart';
 import 'package:heroicons/heroicons.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../local_db.dart';
@@ -13,15 +11,19 @@ import 'package:my_first_flutter_app/pages/notification_service.dart';
 class SurvivalPage extends StatefulWidget {
   final int lessonId;
   final bool isReversed;
-  final bool isPracticeMode; // true = all words, false = expired words only
+  final int wordRangeStart;
+  final int wordRangeEnd;
   final String sourceLanguage;
+  final bool isHardcore;
 
   const SurvivalPage({
     super.key,
     required this.lessonId,
     required this.isReversed,
-    this.isPracticeMode = false, // Default to Review Mode
+    this.wordRangeStart = 0,
+    this.wordRangeEnd = 20,
     this.sourceLanguage = 'es',
+    this.isHardcore = false,
   });
 
   @override
@@ -36,10 +38,6 @@ class _SurvivalPageState extends State<SurvivalPage> {
   List<GameItem> _cleanQueue = []; 
   int _currentIndex = 0;
 
-  // Stats
-  int _lives = 3;
-  int _score = 0;
-
   // Round State
   String _targetWord = "";      
   String _audioTargetWord = ""; 
@@ -49,13 +47,13 @@ class _SurvivalPageState extends State<SurvivalPage> {
 
   // Visual Feedback
   int? _errorIndex; // Tracks which slot should flash red
+  List<Color>? _slotColors;
 
-  Timer? _timer;
-  int _timeLeft = 30;
-  double _progress = 1.0;
-  List<Color>? _slotColors; 
+  // Hardcore mode mistakes
+  final List<Map<String, String>> _mistakes = [];
+  bool _hintUsedThisRound = false;
+  bool _gameFinished = false;
 
-  final FlutterTts _flutterTts = FlutterTts();
   final FocusNode _focusNode = FocusNode();
   final TextEditingController _textController = TextEditingController();
 
@@ -63,18 +61,13 @@ class _SurvivalPageState extends State<SurvivalPage> {
   void initState() {
     super.initState();
     _loadAndProcessData();
-    // Keyboard Guard
-    _focusNode.addListener(() {
-      if (!_focusNode.hasFocus && _lives > 0 && !_isLoading && mounted) {
-         FocusScope.of(context).requestFocus(_focusNode);
-      }
-    });
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
-    _flutterTts.stop();
+    _gameFinished = true;
+    FocusManager.instance.primaryFocus?.unfocus();
+    SystemChannels.textInput.invokeMethod('TextInput.hide');
     _focusNode.dispose();
     _textController.dispose();
     super.dispose();
@@ -92,46 +85,20 @@ class _SurvivalPageState extends State<SurvivalPage> {
         return;
       }
 
-      // Load words based on mode
-      final List<Map<String, dynamic>> rawData;
-      if (widget.isPracticeMode) {
-        // Practice Mode: Load ALL words from lesson
-        rawData = await db.rawQuery('''
-          SELECT w.* FROM lesson_words lw
-          JOIN words w ON w.id = lw.word_id
-          WHERE lw.lesson_id = ?
-          ORDER BY w.id ASC
-        ''', [widget.lessonId]);
-      } else {
-        // Review Mode: Load ONLY expired words (words due for review)
-        // Load words with progress and filter by datetime in Dart for timezone accuracy
-        final allWords = await db.rawQuery('''
-          SELECT w.id, w.lesson_id, w.es, w.en, up.next_due_at
-          FROM lesson_words lw
-          JOIN words w ON w.id = lw.word_id
-          INNER JOIN user_progress up ON w.id = up.word_id AND up.user_id = ?
-          WHERE lw.lesson_id = ?
-            AND up.next_due_at IS NOT NULL
-        ''', [userId, widget.lessonId]);
+      // Load all lesson words ordered by id, then slice the selected range
+      final allWords = await db.rawQuery('''
+        SELECT w.* FROM lesson_words lw
+        JOIN words w ON w.id = lw.word_id
+        WHERE lw.lesson_id = ?
+        ORDER BY w.id ASC
+      ''', [widget.lessonId]);
 
-        // Filter words where next_due_at has passed (including time)
-        final now = DateTime.now().toUtc();
-        rawData = allWords.where((word) {
-          try {
-            final nextDueStr = word['next_due_at'] as String?;
-            if (nextDueStr == null) return false;
-            final dueDate = DateTime.parse(nextDueStr).toUtc();
-            return dueDate.isBefore(now) || dueDate.isAtSameMomentAs(now);
-          } catch (e) {
-            return false;
-          }
-        }).toList();
-      }
+      final start = widget.wordRangeStart.clamp(0, allWords.length);
+      final end = widget.wordRangeEnd.clamp(start, allWords.length);
+      final rawData = allWords.sublist(start, end);
 
       if (rawData.isEmpty) {
-        _showError(widget.isPracticeMode
-          ? S.noWordsInLesson
-          : S.noWordsDueReview);
+        _showError(S.noWordsInLesson);
         return;
       }
 
@@ -187,8 +154,10 @@ class _SurvivalPageState extends State<SurvivalPage> {
   // 🛠️ SANITIZER
   GameItem? _sanitizeItem(Map<String, dynamic> row) {
     try {
-      String rawTarget = (row['es'] as String? ?? "");
-      String rawPrompt = (row['en'] as String? ?? "");
+      // isReversed=true  → target=es col (Spanish or Greek for en-books), prompt=en col
+      // isReversed=false → target=en col (Greek or English for en-books), prompt=es col
+      String rawTarget = widget.isReversed ? (row['es'] as String? ?? "") : (row['en'] as String? ?? "");
+      String rawPrompt = widget.isReversed ? (row['en'] as String? ?? "") : (row['es'] as String? ?? "");
       if (rawTarget.isEmpty) return null;
 
       String cleanBase = rawTarget.toUpperCase();
@@ -249,15 +218,26 @@ class _SurvivalPageState extends State<SurvivalPage> {
       .replaceAll('Ñ', 'N');
   }
 
+  String _removeGreekAccents(String str) {
+    return str
+      .replaceAll('Ά', 'Α')
+      .replaceAll('Έ', 'Ε')
+      .replaceAll('Ή', 'Η')
+      .replaceAll('Ί', 'Ι')
+      .replaceAll('Ϊ', 'Ι')
+      .replaceAll('Ό', 'Ο')
+      .replaceAll('Ύ', 'Υ')
+      .replaceAll('Ϋ', 'Υ')
+      .replaceAll('Ώ', 'Ω');
+  }
+
   void _startRound() {
     if (_currentIndex >= _cleanQueue.length) {
-      _finishGame(win: true);
+      _finishGame();
       return;
     }
     final item = _cleanQueue[_currentIndex];
     
-    _flutterTts.setLanguage(widget.sourceLanguage == 'en' ? "en-US" : "es-ES");
-
     setState(() {
       _targetWord = item.targetForTyping;
       _audioTargetWord = item.targetForAudio;
@@ -266,102 +246,119 @@ class _SurvivalPageState extends State<SurvivalPage> {
       _showHint = false;
       _textController.clear();
       _textController.value = TextEditingValue.empty;
-      _timeLeft = 30;
-      _progress = 1.0;
       _slotColors = null;
       _errorIndex = null;
     });
-    _startTimer();
+    _hintUsedThisRound = false;
   }
 
-  void _startTimer() {
-    _timer?.cancel();
-    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted) return;
-      setState(() {
-        if (_timeLeft > 0) {
-          _timeLeft--;
-          _progress = _timeLeft / 30;
-        } else {
-          _handleTimeOut();
-        }
-      });
-    });
-  }
-
-  // 🔥 CORE LOGIC: BLOCK WRONG INPUT + SPACE DETECTION
+  // 🔥 CORE LOGIC
   void _handleInput(String value) {
-    if (_slotColors != null) return; // Locked on win/loss animation
+    if (_slotColors != null) return;
 
     String cleanValue = value.toUpperCase();
     if (widget.sourceLanguage == 'es') cleanValue = _removeSpanishAccents(cleanValue);
 
-    // 1. If Backspace (value is shorter), just allow it
+    if (widget.isHardcore) {
+      _handleHardcoreInput(cleanValue);
+    } else {
+      _handleNormalInput(cleanValue);
+    }
+  }
+
+  void _handleHardcoreInput(String cleanValue) {
+    // Each keypress fills exactly one slot (including space slots)
+    // so _currentInput.length always equals cleanValue.length
     if (cleanValue.length < _currentInput.length) {
-      setState(() => _currentInput = cleanValue);
+      // Backspace: remove last slot
+      setState(() => _currentInput = _currentInput.substring(0, _currentInput.length - 1));
       return;
     }
-
-    // 2. If new character typed
     if (cleanValue.length > _currentInput.length) {
-      // Get the character they just typed (the last one)
-      String charTyped = cleanValue[cleanValue.length - 1];
-      int indexToCheck = _currentInput.length;
-
-      // Ensure we haven't exceeded word length
-      if (indexToCheck >= _targetWord.length) return;
-
-      // Get expected character from target
-      String expectedChar = _targetWord[indexToCheck];
-
-      // COMPARE with Target (handles both regular chars and spaces)
-      if (charTyped == expectedChar) {
-        // ✅ CORRECT: Accept it
-        HapticFeedback.lightImpact(); // Light feedback for correct input
-
-        setState(() {
-          _currentInput = cleanValue;
-          _errorIndex = null; // Clear any previous error flag
-        });
-
-        // Check for Win
-        if (_currentInput.length == _targetWord.length) {
+      if (_currentInput.length >= _targetWord.length) return;
+      HapticFeedback.lightImpact();
+      final expectedChar = _targetWord[_currentInput.length];
+      // At a space slot: accept any key but fill a space
+      final charToFill = expectedChar == ' ' ? ' ' : cleanValue[cleanValue.length - 1];
+      setState(() => _currentInput = _currentInput + charToFill);
+      if (_currentInput.length == _targetWord.length) {
+        if (_removeGreekAccents(_currentInput) == _removeGreekAccents(_targetWord)) {
           _handleWin();
+        } else {
+          if (_hintUsedThisRound) {
+            final idx = _mistakes.lastIndexWhere((m) => m['isHint'] == 'true' && m['prompt'] == _promptWord);
+            if (idx != -1) _mistakes[idx] = {'prompt': _promptWord, 'typed': _currentInput, 'correct': _audioTargetWord};
+          } else {
+            _mistakes.add({
+              'prompt': _promptWord,
+              'typed': _currentInput,
+              'correct': _audioTargetWord,
+            });
+          }
+          HapticFeedback.heavyImpact();
+          setState(() => _slotColors = List.filled(_targetWord.length, Colors.redAccent));
+          Future.delayed(const Duration(milliseconds: 1000), () {
+            if (!mounted) return;
+            _currentIndex++;
+            _startRound();
+          });
         }
+      }
+    }
+  }
 
+  // Auto-fill any spaces in the target word so user never has to press space
+  String _skipSpaces(String input) {
+    var result = input;
+    while (result.length < _targetWord.length && _targetWord[result.length] == ' ') {
+      result += ' ';
+    }
+    return result;
+  }
+
+  void _handleNormalInput(String cleanValue) {
+    // Each keypress fills exactly one slot (including space slots)
+    // so _currentInput.length always equals cleanValue.length
+    if (cleanValue.length < _currentInput.length) {
+      // Backspace: remove last slot
+      setState(() => _currentInput = _currentInput.substring(0, _currentInput.length - 1));
+      return;
+    }
+    if (cleanValue.length > _currentInput.length) {
+      final int indexToCheck = _currentInput.length;
+      if (indexToCheck >= _targetWord.length) return;
+      final String expectedChar = _targetWord[indexToCheck];
+
+      if (expectedChar == ' ') {
+        // Space slot: accept any key, fill a space, turn orange
+        HapticFeedback.lightImpact();
+        setState(() { _currentInput = _currentInput + ' '; _errorIndex = null; });
+        if (_currentInput.length == _targetWord.length) _handleWin();
       } else {
-        // ❌ WRONG: Block it
-        HapticFeedback.heavyImpact(); // Strong vibration
-
-        // Reset Controller to previous valid input (refuse the new char)
-        _textController.value = TextEditingValue(
-          text: _currentInput,
-          selection: TextSelection.fromPosition(TextPosition(offset: _currentInput.length)),
-        );
-
-        // Flash Red on the slot they tried to fill
-        setState(() {
-           _errorIndex = indexToCheck;
-        });
-
-        // Clear the red flash after 200ms
-        Future.delayed(const Duration(milliseconds: 200), () {
-          if (mounted) setState(() => _errorIndex = null);
-        });
+        final String charTyped = cleanValue[cleanValue.length - 1];
+        if (_removeGreekAccents(charTyped) == _removeGreekAccents(expectedChar)) {
+          HapticFeedback.lightImpact();
+          setState(() { _currentInput = _currentInput + charTyped; _errorIndex = null; });
+          if (_currentInput.length == _targetWord.length) _handleWin();
+        } else {
+          HapticFeedback.heavyImpact();
+          // Reset controller to current valid state so lengths stay in sync
+          _textController.value = TextEditingValue(
+            text: _currentInput,
+            selection: TextSelection.fromPosition(TextPosition(offset: _currentInput.length)),
+          );
+          setState(() { _errorIndex = indexToCheck; });
+          Future.delayed(const Duration(milliseconds: 200), () {
+            if (mounted) setState(() => _errorIndex = null);
+          });
+        }
       }
     }
   }
 
   void _handleWin() {
-    _timer?.cancel();
-    _flutterTts.speak(_audioTargetWord); 
     HapticFeedback.heavyImpact();
-
-    setState(() {
-      _slotColors = List.filled(_targetWord.length, Colors.green);
-      _score += 10 + _timeLeft;
-    });
-    
+    setState(() => _slotColors = List.filled(_targetWord.length, Colors.green));
     Future.delayed(const Duration(milliseconds: 1000), () {
       if (!mounted) return;
       _currentIndex++;
@@ -369,74 +366,178 @@ class _SurvivalPageState extends State<SurvivalPage> {
     });
   }
 
-  void _handleTimeOut() {
-    _timer?.cancel();
-    HapticFeedback.vibrate();
-    
-    setState(() {
-      _lives--;
-      _slotColors = List.filled(_targetWord.length, Colors.redAccent); 
-    });
-
-    if (_lives <= 0) {
-      Future.delayed(const Duration(milliseconds: 1500), () { if (mounted) _finishGame(win: false); });
-    } else {
-      Future.delayed(const Duration(milliseconds: 1500), () {
-        if (!mounted) return;
-        setState(() {
-          _currentInput = "";
-          _textController.clear();
-          _slotColors = null;
-          _timeLeft = 30;
-          _progress = 1.0;
-        });
-        _focusNode.requestFocus();
-        _startTimer();
-      });
-    }
-  }
-
-  void _finishGame({required bool win}) {
-    FocusScope.of(context).unfocus();
+  void _finishGame() {
+    _gameFinished = true;
+    FocusManager.instance.primaryFocus?.unfocus();
+    SystemChannels.textInput.invokeMethod('TextInput.hide');
     NotificationService().onAppOpened();
     showDialog(
       context: context,
       barrierDismissible: false,
+      barrierColor: Colors.black87,
       builder: (dialogContext) {
         final dr = Responsive(dialogContext);
-        return AlertDialog(
-          backgroundColor: AppColors.cardColor,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(dr.radius(16))),
-          title: HeroIcon(win ? HeroIcons.trophy : HeroIcons.faceFrown, size: dr.iconSize(50), color: win ? Colors.amber : Colors.red, style: HeroIconStyle.solid),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-              Text(win ? S.survived : S.gameOver, style: TextStyle(color: Colors.white, fontSize: dr.fontSize(24), fontWeight: FontWeight.bold)),
-              SizedBox(height: dr.spacing(10)),
-              Text("${S.finalScore} $_score", style: TextStyle(color: Colors.grey, fontSize: dr.fontSize(18))),
-          ]),
-          actions: [TextButton(onPressed: () { Navigator.pop(dialogContext); Navigator.pop(context); }, child: Text(S.exit, style: TextStyle(color: Colors.white, fontSize: dr.fontSize(14))))],
+        final hasErrors = _mistakes.isNotEmpty;
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: EdgeInsets.all(dr.spacing(20)),
+          child: Container(
+            constraints: BoxConstraints(maxHeight: MediaQuery.of(dialogContext).size.height * 0.8),
+            decoration: BoxDecoration(
+              color: AppColors.cardColor,
+              borderRadius: BorderRadius.circular(dr.radius(24)),
+              border: Border.all(color: Colors.white.withOpacity(0.08), width: 1),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Header
+                Container(
+                  width: double.infinity,
+                  padding: EdgeInsets.symmetric(vertical: dr.spacing(28), horizontal: dr.spacing(24)),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: hasErrors
+                          ? [Colors.redAccent.withOpacity(0.15), Colors.transparent]
+                          : [Colors.amber.withOpacity(0.15), Colors.transparent],
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                    ),
+                    borderRadius: BorderRadius.vertical(top: Radius.circular(dr.radius(24))),
+                  ),
+                  child: Column(
+                    children: [
+                      HeroIcon(
+                        hasErrors ? HeroIcons.exclamationCircle : HeroIcons.trophy,
+                        size: dr.iconSize(56),
+                        color: hasErrors ? Colors.redAccent : Colors.amber,
+                        style: HeroIconStyle.solid,
+                      ),
+                      SizedBox(height: dr.spacing(12)),
+                      Text(
+                        hasErrors
+                            ? "${_mistakes.length} mistake${_mistakes.length == 1 ? '' : 's'}"
+                            : S.survived,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: dr.fontSize(24),
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                      if (hasErrors)
+                        Padding(
+                          padding: EdgeInsets.only(top: dr.spacing(4)),
+                          child: Text(
+                            "Review your mistakes below",
+                            style: TextStyle(color: Colors.white38, fontSize: dr.fontSize(12)),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+
+                // Mistakes list
+                if (hasErrors)
+                  Flexible(
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      padding: EdgeInsets.symmetric(horizontal: dr.spacing(20), vertical: dr.spacing(8)),
+                      itemCount: _mistakes.length,
+                      itemBuilder: (ctx, i) {
+                        final m = _mistakes[i];
+                        final isHint = m['isHint'] == 'true';
+                        return Container(
+                          margin: EdgeInsets.only(bottom: dr.spacing(8)),
+                          padding: EdgeInsets.symmetric(horizontal: dr.spacing(14), vertical: dr.spacing(10)),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.04),
+                            borderRadius: BorderRadius.circular(dr.radius(12)),
+                            border: Border.all(color: Colors.white.withOpacity(0.07), width: 1),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                m['prompt']!,
+                                style: TextStyle(color: Colors.white60, fontSize: dr.fontSize(11), letterSpacing: 0.5),
+                              ),
+                              SizedBox(height: dr.spacing(6)),
+                              // Correct answer (always visible, full width)
+                              Text(
+                                m['correct']!,
+                                style: TextStyle(color: AppColors.success, fontSize: dr.fontSize(15), fontWeight: FontWeight.bold),
+                                softWrap: true,
+                              ),
+                              if (!isHint) ...[
+                                SizedBox(height: dr.spacing(2)),
+                                Row(
+                                  children: [
+                                    Text("✗  ", style: TextStyle(color: Colors.redAccent, fontSize: dr.fontSize(12))),
+                                    Flexible(
+                                      child: Text(
+                                        m['typed']!,
+                                        style: TextStyle(color: Colors.redAccent.withOpacity(0.7), fontSize: dr.fontSize(12), decoration: TextDecoration.lineThrough, decorationColor: Colors.redAccent),
+                                        softWrap: true,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ] else ...[
+                                SizedBox(height: dr.spacing(2)),
+                                Text("💡 hint used", style: TextStyle(color: Colors.amber.withOpacity(0.7), fontSize: dr.fontSize(11), fontStyle: FontStyle.italic)),
+                              ],
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+
+                // Exit button
+                Padding(
+                  padding: EdgeInsets.all(dr.spacing(20)),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.black,
+                        padding: EdgeInsets.symmetric(vertical: dr.spacing(14)),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(dr.radius(14))),
+                        elevation: 0,
+                      ),
+                      onPressed: () { Navigator.pop(dialogContext); Navigator.pop(context); },
+                      child: Text(S.exit, style: TextStyle(fontSize: dr.fontSize(15), fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         );
       },
     );
   }
 
-  // 👁️ HINT LOGIC
   void _useHint() {
-    setState(() {
-      _showHint = !_showHint;
-      if (_showHint) {
-        _lives--; // COST: 1 LIFE
-        HapticFeedback.lightImpact();
-        
-        if (_lives <= 0) {
-           _timer?.cancel();
-           _finishGame(win: false);
-        } else {
-           Future.delayed(const Duration(seconds: 2), () {
-             if (mounted) setState(() => _showHint = false);
-           });
-        }
+    setState(() => _showHint = !_showHint);
+    if (_showHint) {
+      HapticFeedback.lightImpact();
+      // In hardcore mode, using hint counts as a mistake
+      if (widget.isHardcore && !_hintUsedThisRound) {
+        _hintUsedThisRound = true;
+        _mistakes.add({
+          'prompt': _promptWord,
+          'typed': '(hint used)',
+          'correct': _audioTargetWord,
+          'isHint': 'true',
+        });
       }
-    });
+      Future.delayed(const Duration(seconds: 2), () {
+        if (mounted) setState(() => _showHint = false);
+      });
+    }
   }
 
   @override
@@ -463,60 +564,6 @@ class _SurvivalPageState extends State<SurvivalPage> {
           icon: HeroIcon(HeroIcons.xMark, color: Colors.white70, size: r.iconSize(28), style: HeroIconStyle.outline),
           onPressed: () => Navigator.pop(context)
         ),
-        title: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Lives
-            Container(
-              padding: EdgeInsets.symmetric(horizontal: r.spacing(12), vertical: r.spacing(6)),
-              decoration: BoxDecoration(
-                color: Colors.redAccent.withOpacity(0.2),
-                borderRadius: BorderRadius.circular(r.radius(12)),
-                border: Border.all(color: Colors.redAccent.withOpacity(0.3), width: 1.5),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  HeroIcon(HeroIcons.heart, color: Colors.redAccent, size: r.iconSize(20), style: HeroIconStyle.solid),
-                  SizedBox(width: r.spacing(6)),
-                  Text(
-                    "$_lives",
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w900,
-                      fontSize: r.fontSize(18),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            SizedBox(width: r.spacing(16)),
-            // Score
-            Container(
-              padding: EdgeInsets.symmetric(horizontal: r.spacing(12), vertical: r.spacing(6)),
-              decoration: BoxDecoration(
-                color: Colors.amber.withOpacity(0.2),
-                borderRadius: BorderRadius.circular(r.radius(12)),
-                border: Border.all(color: Colors.amber.withOpacity(0.3), width: 1.5),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  HeroIcon(HeroIcons.star, color: Colors.amber, size: r.iconSize(20), style: HeroIconStyle.solid),
-                  SizedBox(width: r.spacing(6)),
-                  Text(
-                    "$_score",
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w900,
-                      fontSize: r.fontSize(18),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
         actions: [
           Padding(
             padding: EdgeInsets.only(right: r.spacing(8)),
@@ -528,57 +575,11 @@ class _SurvivalPageState extends State<SurvivalPage> {
                 style: HeroIconStyle.outline,
               ),
               onPressed: _useHint,
-              tooltip: S.hintCost,
             ),
           )
         ],
       ),
       body: SingleChildScrollView(child: Column(children: [
-          // Enhanced Progress Bar with Timer
-          Container(
-            padding: EdgeInsets.symmetric(vertical: r.spacing(6)),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [Colors.black.withOpacity(0.5), Colors.transparent],
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-              ),
-            ),
-            child: Column(
-              children: [
-                LinearProgressIndicator(
-                  value: _progress,
-                  backgroundColor: Colors.grey.shade900,
-                  valueColor: AlwaysStoppedAnimation(
-                    _progress > 0.5 ? AppColors.success : (_progress > 0.2 ? Colors.amber : Colors.redAccent)
-                  ),
-                  minHeight: r.scale(6),
-                ),
-                SizedBox(height: r.spacing(6)),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    HeroIcon(
-                      HeroIcons.clock,
-                      color: _progress > 0.2 ? Colors.white70 : Colors.redAccent,
-                      size: r.iconSize(18),
-                      style: HeroIconStyle.outline,
-                    ),
-                    SizedBox(width: r.spacing(4)),
-                    Text(
-                      "$_timeLeft s",
-                      style: TextStyle(
-                        color: _progress > 0.2 ? Colors.white : Colors.redAccent,
-                        fontSize: r.fontSize(16),
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 1,
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
           SizedBox(height: r.spacing(12)),
 
           // Enhanced Prompt Area
@@ -593,44 +594,6 @@ class _SurvivalPageState extends State<SurvivalPage> {
               ),
               child: Column(
                 children: [
-                  // Mode Indicator Badge
-                  Container(
-                    padding: EdgeInsets.symmetric(horizontal: r.spacing(8), vertical: r.spacing(3)),
-                    decoration: BoxDecoration(
-                      color: widget.isPracticeMode
-                        ? Colors.blue.withOpacity(0.2)
-                        : AppColors.primary.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(r.radius(8)),
-                      border: Border.all(
-                        color: widget.isPracticeMode
-                          ? Colors.blue.withOpacity(0.5)
-                          : AppColors.primary.withOpacity(0.5),
-                        width: 1,
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        HeroIcon(
-                          widget.isPracticeMode ? HeroIcons.puzzlePiece : HeroIcons.academicCap,
-                          color: widget.isPracticeMode ? Colors.blue : AppColors.primary,
-                          size: r.iconSize(12),
-                          style: HeroIconStyle.outline,
-                        ),
-                        SizedBox(width: r.spacing(4)),
-                        Text(
-                          widget.isPracticeMode ? S.practice : S.review,
-                          style: TextStyle(
-                            color: widget.isPracticeMode ? Colors.blue : AppColors.primary,
-                            fontSize: r.fontSize(9),
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: 1,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  SizedBox(height: r.spacing(6)),
                   Text(
                     S.translate,
                     style: TextStyle(
@@ -686,7 +649,12 @@ class _SurvivalPageState extends State<SurvivalPage> {
           SizedBox(height: r.spacing(12)),
 
           // 🔠 VISUAL SLOTS - Enhanced Design
-          Container(padding: EdgeInsets.symmetric(horizontal: r.spacing(16)), alignment: Alignment.center, child: Wrap(alignment: WrapAlignment.center, spacing: r.spacing(6), runSpacing: r.spacing(8), children: List.generate(_targetWord.length, (index) {
+          GestureDetector(
+            onTap: () {
+              FocusScope.of(context).requestFocus(_focusNode);
+              SystemChannels.textInput.invokeMethod('TextInput.show');
+            },
+            child: Container(padding: EdgeInsets.symmetric(horizontal: r.spacing(16)), alignment: Alignment.center, child: Wrap(alignment: WrapAlignment.center, spacing: r.spacing(6), runSpacing: r.spacing(8), children: List.generate(_targetWord.length, (index) {
                 String char = index < _currentInput.length ? _currentInput[index] : "";
                 bool isSpace = _targetWord[index] == ' ';
                 bool isFilled = char.isNotEmpty;
@@ -721,8 +689,16 @@ class _SurvivalPageState extends State<SurvivalPage> {
                     borderColor = Colors.transparent;
                 }
 
-                // SPACE INDICATOR - More obvious design
+                // SPACE INDICATOR - turns orange when user presses any key at this slot
                 if (isSpace) {
+                  final Color spaceColor;
+                  if (_slotColors != null) {
+                    spaceColor = _slotColors![index];
+                  } else if (isFilled) {
+                    spaceColor = AppColors.primary;
+                  } else {
+                    spaceColor = Colors.white.withOpacity(0.4);
+                  }
                   return Container(
                     width: slotSize.width * 0.6,
                     height: slotSize.height,
@@ -734,9 +710,9 @@ class _SurvivalPageState extends State<SurvivalPage> {
                           height: r.scale(3),
                           width: slotSize.width * 0.45,
                           decoration: BoxDecoration(
-                            color: isFilled ? AppColors.primary : Colors.white.withOpacity(0.4),
+                            color: spaceColor,
                             borderRadius: BorderRadius.circular(r.radius(2)),
-                            boxShadow: isFilled ? [
+                            boxShadow: isFilled && _slotColors == null ? [
                               BoxShadow(
                                 color: AppColors.primary.withOpacity(0.5),
                                 blurRadius: r.scale(8),
@@ -751,7 +727,7 @@ class _SurvivalPageState extends State<SurvivalPage> {
                           style: TextStyle(
                             fontSize: r.fontSize(7),
                             fontWeight: FontWeight.bold,
-                            color: isFilled ? AppColors.primary : Colors.white.withOpacity(0.3),
+                            color: spaceColor,
                             letterSpacing: 0.5,
                           ),
                         ),
@@ -797,7 +773,7 @@ class _SurvivalPageState extends State<SurvivalPage> {
                     )
                   )
                 );
-          }))),
+          })))),
 
           SizedBox(height: r.spacing(8)),
           Opacity(opacity: 0.0, child: TextField(controller: _textController, focusNode: _focusNode, autocorrect: false, enableSuggestions: false, keyboardType: TextInputType.visiblePassword, textInputAction: TextInputAction.done, onChanged: _handleInput, style: const TextStyle(color: Colors.transparent), cursorColor: Colors.transparent)),
