@@ -113,8 +113,11 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
         decoration: InputDecoration(
           prefixIcon: HeroIcon(icon, color: Colors.grey, style: HeroIconStyle.outline),
           border: InputBorder.none,
-          labelText: label,
-          labelStyle: const TextStyle(color: Colors.grey),
+          enabledBorder: InputBorder.none,
+          focusedBorder: InputBorder.none,
+          filled: false,
+          hintText: label,
+          hintStyle: const TextStyle(color: Colors.grey),
           contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
         ),
       ),

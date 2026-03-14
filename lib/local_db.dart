@@ -539,7 +539,31 @@ class LocalDB {
   Future<void> syncProgress() async {
     final userId = Supabase.instance.client.auth.currentUser?.id;
     if (userId == null) return;
-    await _pushPendingData(await instance.database, Supabase.instance.client, userId);
+    debugPrint('🔄 syncProgress started for user=$userId');
+    final db = await instance.database;
+    final supabase = Supabase.instance.client;
+
+    // Check local attempt_logs before push
+    final localLogs = await db.rawQuery(
+      'SELECT COUNT(*) as total, SUM(CASE WHEN synced=0 THEN 1 ELSE 0 END) as unsynced FROM attempt_logs WHERE user_id=?',
+      [userId]
+    );
+    debugPrint('📋 attempt_logs: total=${localLogs.first['total']}, unsynced=${localLogs.first['unsynced']}');
+
+    await _pushPendingData(db, supabase, userId);
+    debugPrint('✅ _pushPendingData done');
+
+    await _pullDailyStats(db, supabase, userId);
+
+    // Check local daily_stats after pull
+    final localStats = await db.rawQuery(
+      'SELECT date, attempts_sum FROM daily_stats WHERE user_id=? ORDER BY date DESC LIMIT 5',
+      [userId]
+    );
+    debugPrint('📊 local daily_stats after pull:');
+    for (var row in localStats) {
+      debugPrint('   ${row['date']} → attempts=${row['attempts_sum']}');
+    }
   }
 
   Future<void> _pushPendingData(Database db, SupabaseClient supabase, String userId) async {
@@ -656,27 +680,30 @@ class LocalDB {
         attemptsByDate[todayStr] = 0;
       }
 
-      List<Map<String, dynamic>> dailyStatsPayload = [];
-      for (var entry in attemptsByDate.entries) {
-        final isToday = entry.key == todayStr;
-        dailyStatsPayload.add({
-          'user_id': userId,
-          'date': entry.key,
-          // Only today gets the live progress snapshot; past days keep attempts only
-          'total_words': isToday ? totalWords : entry.value > 0 ? totalWords : 0,
-          'learned_count': isToday ? learned : 0,
-          'reviewing_count': isToday ? reviewing : 0,
-          'attempts_sum': entry.value,
+      // Today: upsert progress snapshot. Only include attempts_sum if we have new unsynced logs.
+      final hasTodayUnsynced = attemptsByDate.containsKey(todayStr) && (attemptsByDate[todayStr] ?? 0) > 0;
+      final todayPayload = <String, dynamic>{
+        'user_id': userId,
+        'date': todayStr,
+        'total_words': totalWords,
+        'learned_count': learned,
+        'reviewing_count': reviewing,
+      };
+      if (hasTodayUnsynced) todayPayload['attempts_sum'] = attemptsByDate[todayStr];
+      debugPrint('📤 Upserting daily_stats for today=$todayStr hasTodayUnsynced=$hasTodayUnsynced learned=$learned reviewing=$reviewing');
+      await supabase.from('daily_stats').upsert(todayPayload, onConflict: 'user_id, date');
+      debugPrint('✅ daily_stats upsert done');
+
+      // Past dates: only update attempts_sum — never overwrite learned/reviewing
+      final pastDates = attemptsByDate.entries.where((e) => e.key != todayStr).toList();
+      for (var entry in pastDates) {
+        await supabase.rpc('upsert_attempts_only', params: {
+          'p_user_id': userId,
+          'p_date': entry.key,
+          'p_attempts': entry.value,
         });
       }
-
-      if (dailyStatsPayload.isNotEmpty) {
-        await supabase.from('daily_stats').upsert(
-          dailyStatsPayload,
-          onConflict: 'user_id, date'
-        );
-        debugPrint("   ✅ Synced ${dailyStatsPayload.length} days to daily_stats");
-      }
+      debugPrint("   ✅ Synced daily_stats: today + ${pastDates.length} past dates (attempts only)");
 
       // Mark logs as synced
       await db.update(

@@ -74,10 +74,70 @@ class _RegisterPageState extends State<RegisterPage> {
       );
       
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Account created! Please login."), backgroundColor: AppColors.success),
+        await showDialog(
+          context: context,
+          barrierDismissible: false,
+          barrierColor: Colors.black87,
+          builder: (ctx) => Dialog(
+            backgroundColor: Colors.transparent,
+            child: Container(
+              padding: const EdgeInsets.all(28),
+              decoration: BoxDecoration(
+                color: const Color(0xFF111214),
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: Colors.white.withOpacity(0.08)),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 64, height: 64,
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withOpacity(0.15),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.mark_email_read_outlined, color: AppColors.primary, size: 32),
+                  ),
+                  const SizedBox(height: 20),
+                  const Text('Check your email', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 10),
+                  Text('We sent a confirmation link to\n$email', textAlign: TextAlign.center, style: TextStyle(color: Colors.grey.shade400, fontSize: 14, height: 1.5)),
+                  const SizedBox(height: 24),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.black,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        elevation: 0,
+                      ),
+                      onPressed: () { Navigator.pop(ctx); Navigator.of(context).pop(); },
+                      child: const Text('Got it', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextButton(
+                    onPressed: () async {
+                      try {
+                        await Supabase.instance.client.auth.resend(type: OtpType.signup, email: email);
+                        if (ctx.mounted) ScaffoldMessenger.of(ctx).showSnackBar(
+                          const SnackBar(content: Text('Email resent! Check your inbox.')),
+                        );
+                      } catch (e) {
+                        if (ctx.mounted) ScaffoldMessenger.of(ctx).showSnackBar(
+                          SnackBar(content: Text('Failed to resend: ${e.toString()}'), backgroundColor: AppColors.error),
+                        );
+                      }
+                    },
+                    child: Text('Resend email', style: TextStyle(color: Colors.grey.shade500, fontSize: 13)),
+                  ),
+                ],
+              ),
+            ),
+          ),
         );
-        Navigator.of(context).pop();
       }
     } on AuthException catch (error) {
       if (mounted) _showError(error.message);

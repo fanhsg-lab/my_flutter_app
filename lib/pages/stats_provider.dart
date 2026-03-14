@@ -109,7 +109,11 @@ final statsProvider = FutureProvider<UserStats>((ref) async {
 
   // --- A. COUNTS & FORECAST ---
   final direction = await LocalDB.instance.getWordDirection();
-  final progressTable = direction == 'reverse' ? 'user_progress' : 'user_progress_reverse';
+  final sourceLanguage = await LocalDB.instance.getBookSourceLanguage();
+  // English books have swapped columns, so the effective direction is flipped
+  bool isEffectivelyReversed = direction == 'reverse';
+  if (sourceLanguage == 'en') isEffectivelyReversed = !isEffectivelyReversed;
+  final progressTable = isEffectivelyReversed ? 'user_progress' : 'user_progress_reverse';
   final allWords = await db.rawQuery('''
     SELECT * FROM $progressTable
     WHERE user_id = ? $wordFilter

@@ -261,8 +261,13 @@ class _MainScreenState extends State<MainScreen> {
       debugPrint("🔥 Final Streak Calculation: $streak");
 
       // --- 4. STATS (Words Learned) ---
-      final isReversed = _selectedLanguage.startsWith('Gr');
-      final progressTable = isReversed ? 'user_progress' : 'user_progress_reverse';
+      // Read direction and source language from DB to avoid race condition with _fetchDashboardData
+      final direction = await LocalDB.instance.getWordDirection();
+      final srcLang = await LocalDB.instance.getBookSourceLanguage();
+      bool isEffectivelyReversed = direction == 'reverse';
+      // English books have swapped columns, so the effective direction is flipped
+      if (srcLang == 'en') isEffectivelyReversed = !isEffectivelyReversed;
+      final progressTable = isEffectivelyReversed ? 'user_progress' : 'user_progress_reverse';
       final learnedRes = await db.rawQuery(
         "SELECT COUNT(*) FROM $progressTable WHERE user_id = ? AND status IN ('learned', 'consolidating')",
         [userId],

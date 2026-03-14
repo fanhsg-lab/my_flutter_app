@@ -338,7 +338,7 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
     // This runs AFTER all words are safely in the SQLite DB.
     // We don't use 'await' so the UI doesn't freeze.
     LocalDB.instance.syncProgress().then((_) {
-       // Optional: Update charts again after cloud confirms
+       LocalDB.instance.notifyDataChanged();
        if (mounted) ref.invalidate(statsProvider);
     });
 
@@ -359,7 +359,7 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
         JOIN words w ON w.id = lw.word_id
         WHERE lw.lesson_id = ?
       ''', [widget.lessonId]);
-      final statsProgressTable = widget.isReversed ? 'user_progress_reverse' : 'user_progress';
+      final statsProgressTable = widget.isReversed ? 'user_progress' : 'user_progress_reverse';
       final progressData = await db.query(statsProgressTable, where: 'user_id = ?', whereArgs: [userId]);
       final progressMap = { for (var p in progressData) p['word_id'] as int: p };
 
@@ -419,7 +419,7 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
         WHERE lw.lesson_id = ?
         ORDER BY w.id ASC
       ''', [widget.lessonId]);
-      final progressTable = widget.isReversed ? 'user_progress_reverse' : 'user_progress';
+      final progressTable = widget.isReversed ? 'user_progress' : 'user_progress_reverse';
       final progressData = await db.query(progressTable, where: 'user_id = ?', whereArgs: [userId]);
       Map<int, Map<String, dynamic>> progressMap = { for (var p in progressData) p['word_id'] as int: p };
 
@@ -428,21 +428,12 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
       List<Map<String, dynamic>> newQueue = []; 
       DateTime now = DateTime.now().toUtc();
 
-      debugPrint('🃏 Bubble load — lessonId=${widget.lessonId}, total words=${wordsData.length}');
       for (var word in wordsData) {
         int wordId = word['id'] as int;
         var progress = progressMap[wordId];
         String status = progress?['status'] as String? ?? 'new';
         DateTime? nextDue = progress?['next_due_at'] != null ? DateTime.parse(progress!['next_due_at'] as String).toUtc() : null;
         bool isTimeUp = nextDue == null || nextDue.isBefore(now);
-
-        String bucket;
-        if (status == 'learning') bucket = 'learningQueue';
-        else if ((status == 'consolidating' || status == 'learned') && isTimeUp) bucket = 'reviewQueue';
-        else if (status == 'new' || progress == null) bucket = 'newQueue';
-        else bucket = 'SKIPPED (mastered, not due until ${nextDue?.toLocal()})';
-
-        debugPrint('   word $wordId [${word['es']}/${word['en']}] status=$status isTimeUp=$isTimeUp → $bucket');
 
         Map<String, dynamic> item = {
           'word_id': wordId,
@@ -476,11 +467,6 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
       while (finalSelection.length < 10 && reviewQueue.isNotEmpty) finalSelection.add(reviewQueue.removeAt(0));
 
       finalSelection.shuffle();
-
-      debugPrint('🎯 Final selection (${finalSelection.length} words):');
-      for (var item in finalSelection) {
-        debugPrint('   → word ${item['word_id']} [${item['front']}/${item['reveal']}] status=${item['status']}');
-      }
 
       if (mounted) {
         setState(() {

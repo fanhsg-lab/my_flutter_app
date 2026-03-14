@@ -465,9 +465,10 @@ class _FeedbackSheetState extends State<_FeedbackSheet> {
 
   Widget _buildForm() {
     final charCount = _controller.text.length;
-    return Padding(
+    return SafeArea(
+      child: SingleChildScrollView(
       key: const ValueKey('form'),
-      padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
+      padding: EdgeInsets.fromLTRB(24, 12, 24, MediaQuery.of(context).viewInsets.bottom + 24),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -573,6 +574,7 @@ class _FeedbackSheetState extends State<_FeedbackSheet> {
           ),
         ],
       ),
+      ),
     );
   }
 }
@@ -599,7 +601,8 @@ class _SubscriptionSheetState extends State<_SubscriptionSheet> {
         color: AppColors.cardColor,
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      child: Padding(
+      child: SafeArea(
+        child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -707,6 +710,7 @@ class _SubscriptionSheetState extends State<_SubscriptionSheet> {
               child: Text(S.restorePurchases, style: TextStyle(color: Colors.grey.shade500, fontSize: 13)),
             ),
           ],
+        ),
         ),
       ),
     );
