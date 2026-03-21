@@ -64,7 +64,14 @@ class SubscriptionService {
     // 1. Load cached state first (instant, offline-safe)
     await _loadCachedState();
 
-    // 2. Refresh from Supabase if online
+    // 2. Ensure trial start date is set (first-time setup)
+    try {
+      await LocalDB.instance.ensureTrialStarted();
+    } catch (e) {
+      debugPrint("⚠️ Could not ensure trial started: $e");
+    }
+
+    // 3. Refresh from Supabase if online
     try {
       await refreshStatus();
     } catch (e) {
@@ -108,6 +115,8 @@ class SubscriptionService {
         ? DateTime.tryParse(data['sub_expires_at'].toString())
         : null;
 
+    debugPrint("📋 Subscription status: isTrial=$isTrial trialDaysLeft=$trialDaysLeft hasActiveSub=$hasActiveSub expiresAt=$subExpiresAt");
+
     AccessLevel access;
     if (hasActiveSub) {
       access = AccessLevel.subscribed;
@@ -116,6 +125,7 @@ class SubscriptionService {
     } else {
       access = AccessLevel.locked;
     }
+    debugPrint("📋 → AccessLevel: $access");
 
     state.value = SubscriptionState(
       access: access,
@@ -179,9 +189,9 @@ class SubscriptionService {
   }
 
   Future<void> _handlePurchase(PurchaseDetails purchase) async {
+    debugPrint("🛒 Purchase event: status=${purchase.status} product=${purchase.productID}");
     if (purchase.status == PurchaseStatus.purchased ||
         purchase.status == PurchaseStatus.restored) {
-      // Verify with server
       await _verifyPurchase(purchase);
     }
 
@@ -189,15 +199,15 @@ class SubscriptionService {
       debugPrint("❌ Purchase error: ${purchase.error}");
     }
 
-    // Always complete pending purchases
     if (purchase.pendingCompletePurchase) {
       await InAppPurchase.instance.completePurchase(purchase);
     }
   }
 
   Future<void> _verifyPurchase(PurchaseDetails purchase) async {
+    debugPrint("🔍 Verifying purchase: ${purchase.productID} token=${purchase.verificationData.serverVerificationData.substring(0, 20)}...");
     try {
-      await Supabase.instance.client.functions.invoke(
+      final result = await Supabase.instance.client.functions.invoke(
         'verify-purchase',
         body: {
           'product_id': purchase.productID,
@@ -205,10 +215,9 @@ class SubscriptionService {
           'platform': Platform.isAndroid ? 'android' : 'ios',
         },
       );
-
-      // Refresh status after verification
+      debugPrint("🔍 Edge function response: ${result.data}");
       await refreshStatus();
-      debugPrint("✅ Purchase verified: ${purchase.productID}");
+      debugPrint("✅ Purchase verified: ${purchase.productID} → access=${state.value.access}");
     } catch (e) {
       debugPrint("❌ Error verifying purchase: $e");
     }
@@ -228,6 +237,7 @@ class SubscriptionService {
 
   /// Restore previous purchases
   Future<void> restorePurchases() async {
+    debugPrint("🔄 Restore purchases triggered");
     await InAppPurchase.instance.restorePurchases();
   }
 

@@ -161,6 +161,9 @@ class _MainScreenState extends State<MainScreen> {
         final directionLabel = isReversed
             ? 'Gr -> $shortLabel'
             : '$shortLabel -> Gr';
+        final savedLessonIndex = await LocalDB.instance.getCurrentLessonIndex();
+        final restoredIndex = (savedLessonIndex != null && savedLessonIndex < data.length)
+            ? savedLessonIndex : 0;
         setState(() {
           _lessons = data;
           if (!_initialLoadDone || srcLang != _sourceLanguage) _selectedLanguage = directionLabel;
@@ -169,10 +172,14 @@ class _MainScreenState extends State<MainScreen> {
           _bookLevel = bookLevel;
           _isLoading = false;
           if (!_initialLoadDone) {
+            _currentLessonIndex = restoredIndex;
             _initialLoadDone = true;
             widget.onReady?.call();
           }
         });
+        if (restoredIndex > 0 && _lessonPageController != null && _lessonPageController!.hasClients) {
+          _lessonPageController!.jumpToPage(restoredIndex);
+        }
       }
     } catch (e) {
       debugPrint("⚠️ UI Read Error: $e");
@@ -261,18 +268,22 @@ class _MainScreenState extends State<MainScreen> {
       debugPrint("🔥 Final Streak Calculation: $streak");
 
       // --- 4. STATS (Words Learned) ---
-      // Read direction and source language from DB to avoid race condition with _fetchDashboardData
       final direction = await LocalDB.instance.getWordDirection();
-      final srcLang = await LocalDB.instance.getBookSourceLanguage();
-      bool isEffectivelyReversed = direction == 'reverse';
-      // English books have swapped columns, so the effective direction is flipped
-      if (srcLang == 'en') isEffectivelyReversed = !isEffectivelyReversed;
-      final progressTable = isEffectivelyReversed ? 'user_progress' : 'user_progress_reverse';
-      final learnedRes = await db.rawQuery(
-        "SELECT COUNT(*) FROM $progressTable WHERE user_id = ? AND status IN ('learned', 'consolidating')",
-        [userId],
-      );
-      int learnedCount = Sqflite.firstIntValue(learnedRes) ?? 0;
+      final progressTable = direction == 'reverse' ? 'user_progress' : 'user_progress_reverse';
+
+      // Filter by current book's lessons only
+      final lessonIds = _lessons.map((l) => l.id).toList();
+      int learnedCount = 0;
+      if (lessonIds.isNotEmpty) {
+        final placeholders = lessonIds.map((_) => '?').join(',');
+        final learnedRes = await db.rawQuery('''
+          SELECT COUNT(DISTINCT p.word_id) FROM $progressTable p
+          JOIN lesson_words lw ON lw.word_id = p.word_id
+          WHERE p.user_id = ? AND p.status IN ('learned', 'consolidating')
+          AND lw.lesson_id IN ($placeholders)
+        ''', [userId, ...lessonIds]);
+        learnedCount = Sqflite.firstIntValue(learnedRes) ?? 0;
+      }
 
       if (mounted) {
         setState(() {
@@ -576,6 +587,9 @@ class _MainScreenState extends State<MainScreen> {
                                                   await LocalDB.instance.setCurrentBookId(book.id);
                                                   if (mounted) {
                                                     Navigator.pop(context);
+                                                    setState(() => _currentLessonIndex = 0);
+                                                    _lessonPageController?.jumpToPage(0);
+                                                    LocalDB.instance.setCurrentLessonIndex(0);
                                                     if (teacherChanged) {
                                                       // Teacher changed — re-sync to download new teacher's words
                                                       setState(() => _isLoading = true);
@@ -834,7 +848,10 @@ class _MainScreenState extends State<MainScreen> {
                           initialPage: _currentLessonIndex,
                         ),
                         itemCount: _lessons.length,
-                        onPageChanged: (index) => setState(() => _currentLessonIndex = index),
+                        onPageChanged: (index) {
+                          setState(() => _currentLessonIndex = index);
+                          LocalDB.instance.setCurrentLessonIndex(index);
+                        },
                         itemBuilder: (context, index) {
                           bool isActive = index == _currentLessonIndex;
                           return AnimatedScale(
@@ -1102,12 +1119,12 @@ class _MainScreenState extends State<MainScreen> {
         insetPadding: EdgeInsets.all(r.spacing(24)),
         child: Container(
           decoration: BoxDecoration(
-            color: AppColors.cardColor,
-            borderRadius: BorderRadius.circular(r.radius(24)),
+            color: const Color(0xFF1A1A1A),
+            borderRadius: BorderRadius.circular(r.radius(20)),
             border: Border.all(color: Colors.white.withOpacity(0.08), width: 1),
           ),
           child: SingleChildScrollView(
-            padding: EdgeInsets.all(r.spacing(24)),
+            padding: EdgeInsets.all(r.spacing(20)),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
@@ -1115,40 +1132,41 @@ class _MainScreenState extends State<MainScreen> {
                 // Header
                 Row(
                   children: [
-                    Container(
-                      padding: EdgeInsets.all(r.spacing(10)),
-                      decoration: BoxDecoration(
-                        color: AppColors.primary.withOpacity(0.15),
-                        shape: BoxShape.circle,
-                      ),
-                      child: Text('i', style: TextStyle(color: AppColors.primary, fontSize: r.fontSize(16), fontWeight: FontWeight.bold, fontStyle: FontStyle.italic)),
-                    ),
-                    SizedBox(width: r.spacing(12)),
-                    Text('Reading the Library', style: TextStyle(color: Colors.white, fontSize: r.fontSize(18), fontWeight: FontWeight.w800)),
+                    HeroIcon(HeroIcons.bookOpen, color: AppColors.primary, size: r.iconSize(20), style: HeroIconStyle.solid),
+                    SizedBox(width: r.spacing(10)),
+                    Text('How to read the Library', style: TextStyle(color: Colors.white, fontSize: r.fontSize(16), fontWeight: FontWeight.w800)),
                   ],
                 ),
-                SizedBox(height: r.spacing(20)),
-                _infoSection(r, '📊', 'Lesson strength (e.g. 0.72)', 'The average memory strength of all words in the lesson. 0.00 = not studied, 1.00 = fully mastered. The higher it is, the better you know this lesson.'),
-                _infoSection(r, '⚫', 'New (grey)', 'Words you haven\'t studied at all yet.'),
-                _infoSection(r, '🔸', 'Learning (faded orange)', 'Words you\'ve seen but are still being drilled — not yet in spaced repetition.'),
-                _infoSection(r, '🔶', 'Due for review (medium orange)', 'Words in spaced repetition that are due — you need to review them again.'),
-                _infoSection(r, '🟠', 'Mastered (full orange)', 'Words not due yet — scheduled in the future. Same as the Mastered count on the lesson card.'),
-                _infoSection(r, '▬', 'Strength bar', 'The thin bar next to each word shows its individual strength. The colour matches the dot: grey → faded → medium → full orange.'),
-                _infoSection(r, '%', 'Accuracy', 'The small percentage under each word\'s bar shows how often you answered it correctly out of all attempts.'),
-                _infoSection(r, '⭕', 'Circle on lesson card', 'The big percentage in the circle = how many words in the lesson are Mastered. The thin inner arc shows words still in Review.'),
-                SizedBox(height: r.spacing(20)),
+                SizedBox(height: r.spacing(16)),
+                // Word status section label
+                Text('WORD STATUS', style: TextStyle(color: Colors.white38, fontSize: r.fontSize(10), fontWeight: FontWeight.w700, letterSpacing: 1.5)),
+                SizedBox(height: r.spacing(10)),
+                _infoRow(r, _dot(r, Colors.grey.shade700), 'New', 'Haven\'t studied this word yet.'),
+                _infoRow(r, _dot(r, AppColors.primary.withOpacity(0.25)), 'Learning', 'Seen but still being drilled — not yet in spaced repetition.'),
+                _infoRow(r, _dot(r, AppColors.accent), 'Due for review', 'In spaced repetition and due — needs a review now.'),
+                _infoRow(r, _dot(r, AppColors.primary), 'Mastered', 'Scheduled in the future — not due yet.'),
+                SizedBox(height: r.spacing(14)),
+                Divider(color: Colors.white.withOpacity(0.07), height: 1),
+                SizedBox(height: r.spacing(14)),
+                // Other metrics
+                Text('OTHER METRICS', style: TextStyle(color: Colors.white38, fontSize: r.fontSize(10), fontWeight: FontWeight.w700, letterSpacing: 1.5)),
+                SizedBox(height: r.spacing(10)),
+                _infoRow(r, _pill(r, AppColors.primary), 'Strength bar', 'Thin bar beside each word — longer = stronger memory. Colour matches the word\'s status dot.'),
+                _infoRow(r, _pct(r), 'Accuracy %', 'How often you answered correctly out of all attempts.'),
+                _infoRow(r, _circle(r), 'Lesson circle', 'Big % = Mastered words. Inner arc = words still in Review.'),
+                SizedBox(height: r.spacing(18)),
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.primary,
                       foregroundColor: Colors.black,
-                      padding: EdgeInsets.symmetric(vertical: r.spacing(14)),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(r.radius(14))),
+                      padding: EdgeInsets.symmetric(vertical: r.spacing(13)),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(r.radius(12))),
                       elevation: 0,
                     ),
                     onPressed: () => Navigator.pop(dialogContext),
-                    child: Text('Got it', style: TextStyle(fontSize: r.fontSize(15), fontWeight: FontWeight.bold)),
+                    child: Text('Got it', style: TextStyle(fontSize: r.fontSize(14), fontWeight: FontWeight.bold)),
                   ),
                 ),
               ],
@@ -1159,22 +1177,44 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
-  Widget _infoSection(Responsive r, String emoji, String title, String body) {
+  Widget _dot(Responsive r, Color color) => Container(
+    width: r.scale(10), height: r.scale(10),
+    decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+  );
+
+  Widget _pill(Responsive r, Color color) => Container(
+    width: r.scale(18), height: r.scale(5),
+    decoration: BoxDecoration(borderRadius: BorderRadius.circular(3), color: color),
+  );
+
+  Widget _pct(Responsive r) => Text('%', style: TextStyle(color: AppColors.primary, fontSize: r.fontSize(12), fontWeight: FontWeight.w800));
+
+  Widget _circle(Responsive r) => SizedBox(
+    width: r.scale(16), height: r.scale(16),
+    child: CircularProgressIndicator(
+      value: 0.6,
+      strokeWidth: r.scale(2.5),
+      backgroundColor: AppColors.accent.withOpacity(0.4),
+      valueColor: AlwaysStoppedAnimation(AppColors.primary),
+    ),
+  );
+
+  Widget _infoRow(Responsive r, Widget icon, String title, String body) {
     return Padding(
-      padding: EdgeInsets.only(bottom: r.spacing(14)),
+      padding: EdgeInsets.only(bottom: r.spacing(10)),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(emoji, style: TextStyle(fontSize: r.fontSize(18))),
-          SizedBox(width: r.spacing(12)),
+          SizedBox(width: r.scale(24), child: Center(child: icon)),
+          SizedBox(width: r.spacing(10)),
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title, style: TextStyle(color: Colors.white, fontSize: r.fontSize(13), fontWeight: FontWeight.w700)),
-                SizedBox(height: r.spacing(2)),
-                Text(body, style: TextStyle(color: Colors.white54, fontSize: r.fontSize(12), height: 1.4)),
-              ],
+            child: RichText(
+              text: TextSpan(
+                children: [
+                  TextSpan(text: '$title  ', style: TextStyle(color: Colors.white, fontSize: r.fontSize(13), fontWeight: FontWeight.w700)),
+                  TextSpan(text: body, style: TextStyle(color: Colors.white54, fontSize: r.fontSize(12), height: 1.4)),
+                ],
+              ),
             ),
           ),
         ],
@@ -1219,6 +1259,7 @@ class _MainScreenState extends State<MainScreen> {
                     chapterNumber: lesson.chapter_number,
                     wordCount: totalWords,
                     sourceLanguage: _sourceLanguage,
+                    isReversed: _selectedLanguage.startsWith('Gr'),
                   );
                 },
               ),
@@ -1531,6 +1572,7 @@ class _LibraryLessonTile extends StatefulWidget {
   final int chapterNumber;
   final int wordCount;
   final String sourceLanguage;
+  final bool isReversed;
 
   const _LibraryLessonTile({
     required this.lessonId,
@@ -1538,6 +1580,7 @@ class _LibraryLessonTile extends StatefulWidget {
     required this.chapterNumber,
     required this.wordCount,
     required this.sourceLanguage,
+    required this.isReversed,
   });
 
   @override
@@ -1547,6 +1590,17 @@ class _LibraryLessonTile extends StatefulWidget {
 class _LibraryLessonTileState extends State<_LibraryLessonTile> with SingleTickerProviderStateMixin {
   List<Map<String, dynamic>>? _words;
   bool _isLoading = false;
+
+  @override
+  void didUpdateWidget(_LibraryLessonTile old) {
+    super.didUpdateWidget(old);
+    if (old.isReversed != widget.isReversed) {
+      _words = null;
+      _avgStrength = null;
+      _loadAvgStrength();
+      if (_isExpanded) _loadWords();
+    }
+  }
   bool _isExpanded = false;
   double? _avgStrength;
 
@@ -1582,7 +1636,7 @@ class _LibraryLessonTileState extends State<_LibraryLessonTile> with SingleTicke
   }
 
   Future<void> _loadWords() async {
-    if (_words != null) return; // already loaded
+    if (_words != null && !_isLoading) return; // already loaded
     setState(() => _isLoading = true);
     final db = await LocalDB.instance.database;
     final userId = Supabase.instance.client.auth.currentUser?.id;

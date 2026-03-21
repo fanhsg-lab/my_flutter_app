@@ -6,7 +6,6 @@ import '../local_db.dart';
 import '../theme.dart';
 import '../responsive.dart';
 import '../services/app_strings.dart';
-import '../utils/word_distractor.dart';
 
 class GameQuizPage extends StatefulWidget {
   final int lessonId;
@@ -112,6 +111,7 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
   }
 
   void _setupQuestion() {
+    try {
     if (_wordQueue.isEmpty) {
       setState(() => _showCycleComplete = true);
       Future.delayed(const Duration(milliseconds: 2000), () {
@@ -126,7 +126,77 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
 
     final nextWord = _wordQueue.removeAt(0);
     final correctSpelling = nextWord['question']!;
-    final distractors = WordDistractorGenerator.generate(correctSpelling, widget.sourceLanguage, count: 3);
+
+    // Build distractor pool from vocabulary using similarity rules
+    final articleRegex = RegExp(r'^(EL|LA|LOS|LAS|UN|UNA|THE|A|AN)\s+', caseSensitive: false);
+    final articleMatch = RegExp(r'^(EL|LA|LOS|LAS|UN|UNA)\s+', caseSensitive: false);
+    String stripped(String s) => s.replaceFirst(articleRegex, '').trim();
+    String? leadingArticle(String s) {
+      final m = articleMatch.firstMatch(s.trim());
+      return m != null ? m.group(0)!.trim().toUpperCase() : null;
+    }
+
+    final correctWordCount = correctSpelling.trim().split(' ').length;
+    final correctIsQuestion = correctSpelling.contains('?') || correctSpelling.contains('¿');
+    final correctStripped = stripped(correctSpelling);
+    final correctStrLen = correctStripped.isEmpty ? 1 : correctStripped.length;
+    final correctArticle = leadingArticle(correctSpelling); // e.g. "EL", "LA", null
+
+    final allCandidates = _vocabulary
+        .where((w) => w['question'] != correctSpelling)
+        .map((w) => w['question']!)
+        .toList();
+
+    // Level 1: strictest — same article + word count + length ratio + no question mismatch
+    List<String> pool = allCandidates.where((w) {
+      final wWordCount = w.trim().split(' ').length;
+      final wIsQuestion = w.contains('?') || w.contains('¿');
+      final wLen = stripped(w).length;
+      final ratio = wLen / correctStrLen;
+      final sameArticle = correctArticle == null || leadingArticle(w) == correctArticle;
+      return sameArticle
+          && (wWordCount - correctWordCount).abs() <= 1
+          && wIsQuestion == correctIsQuestion
+          && ratio >= 0.5 && ratio <= 2.0;
+    }).toList();
+
+    // Level 2: relax length, keep article + word count
+    if (pool.length < 3) {
+      pool = allCandidates.where((w) {
+        final wWordCount = w.trim().split(' ').length;
+        final wIsQuestion = w.contains('?') || w.contains('¿');
+        final sameArticle = correctArticle == null || leadingArticle(w) == correctArticle;
+        return sameArticle
+            && (wWordCount - correctWordCount).abs() <= 1
+            && wIsQuestion == correctIsQuestion;
+      }).toList();
+    }
+
+    // Level 3: relax article, keep word count + length
+    if (pool.length < 3) {
+      pool = allCandidates.where((w) {
+        final wWordCount = w.trim().split(' ').length;
+        final wIsQuestion = w.contains('?') || w.contains('¿');
+        final wLen = stripped(w).length;
+        final ratio = wLen / correctStrLen;
+        return (wWordCount - correctWordCount).abs() <= 1
+            && wIsQuestion == correctIsQuestion
+            && ratio >= 0.5 && ratio <= 2.0;
+      }).toList();
+    }
+
+    // Level 4: anything goes
+    if (pool.length < 3) pool = allCandidates.toList();
+
+    // Sort by stripped length similarity, shuffle top 25% for variety
+    pool.sort((a, b) =>
+        (stripped(a).length - correctStrLen).abs()
+            .compareTo((stripped(b).length - correctStrLen).abs()));
+
+    final topCount = pool.isEmpty ? 0 : (pool.length * 0.25).ceil().clamp(3, pool.length);
+    final topPool = pool.take(topCount).toList()..shuffle(_random);
+    final List<String> distractors = topPool.take(3).toList();
+
     final allOptions = [correctSpelling, ...distractors]..shuffle(_random);
     final correctIdx = allOptions.indexOf(correctSpelling);
 
@@ -139,6 +209,9 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
       _selectedIndex = -1;
     });
     _fadeCtrl.forward();
+    } catch (e, st) {
+      debugPrint('❌ _setupQuestion error: $e\n$st');
+    }
   }
 
   // ── Quiz logic ────────────────────────────────────────────────────────────
@@ -159,7 +232,7 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
       _selectedIndex = index;
       _answered = true;
     });
-    Future.delayed(const Duration(milliseconds: 600), () {
+    Future.delayed(Duration(milliseconds: isCorrect ? 600 : 1200), () {
       if (mounted) _setupQuestion();
     });
   }
@@ -208,12 +281,9 @@ class _GameQuizPageState extends State<GameQuizPage> with TickerProviderStateMix
           ),
         ),
         SizedBox(width: r.spacing(14)),
-        ScaleTransition(
-          scale: _scoreScale,
-          child: Text('$_score',
-              style: TextStyle(color: AppColors.primary,
-                  fontSize: r.fontSize(18), fontWeight: FontWeight.w900)),
-        ),
+        Text('${_wordQueue.length}',
+            style: TextStyle(color: AppColors.primary,
+                fontSize: r.fontSize(18), fontWeight: FontWeight.w900)),
       ]),
     );
   }

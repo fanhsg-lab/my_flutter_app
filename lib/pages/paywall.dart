@@ -72,7 +72,7 @@ class _PaywallOverlayState extends State<PaywallOverlay> {
                   children: [
                     Expanded(child: _buildPlanCard(
                       title: S.monthly,
-                      price: '\$4.99',
+                      price: _priceFor(kMonthlyProductId, '€1.00'),
                       period: S.perMonth,
                       productId: kMonthlyProductId,
                       r: r,
@@ -80,7 +80,7 @@ class _PaywallOverlayState extends State<PaywallOverlay> {
                     SizedBox(width: r.spacing(12)),
                     Expanded(child: _buildPlanCard(
                       title: S.yearly,
-                      price: '\$39.99',
+                      price: _priceFor(kYearlyProductId, '€10.00'),
                       period: S.perYear,
                       productId: kYearlyProductId,
                       badge: S.save33,
@@ -153,69 +153,94 @@ class _PaywallOverlayState extends State<PaywallOverlay> {
     String? badge,
   }) {
     final isSelected = _selectedProduct == productId;
-    return GestureDetector(
-      onTap: () => setState(() => _selectedProduct = productId),
-      child: Container(
-        padding: EdgeInsets.all(r.spacing(16)),
-        decoration: BoxDecoration(
-          color: AppColors.cardColor,
-          borderRadius: BorderRadius.circular(r.radius(14)),
-          border: Border.all(
-            color: isSelected ? AppColors.primary : Colors.white10,
-            width: isSelected ? 2 : 1,
-          ),
-        ),
-        child: Column(
-          children: [
-            if (badge != null) ...[
-              Container(
-                padding: EdgeInsets.symmetric(
-                  horizontal: r.spacing(8),
-                  vertical: r.spacing(3),
-                ),
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(r.radius(6)),
-                ),
-                child: Text(
-                  badge,
-                  style: TextStyle(
-                    color: AppColors.primary,
-                    fontSize: r.fontSize(10),
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-              SizedBox(height: r.spacing(8)),
-            ],
-            Text(
-              title,
-              style: TextStyle(
-                color: Colors.grey,
-                fontSize: r.fontSize(12),
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            SizedBox(height: r.spacing(6)),
-            Text(
-              price,
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: r.fontSize(24),
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            Text(
-              period,
-              style: TextStyle(
-                color: Colors.grey,
-                fontSize: r.fontSize(11),
-              ),
-            ),
-          ],
+    final card = Container(
+      width: double.infinity,
+      padding: EdgeInsets.all(r.spacing(16)),
+      decoration: BoxDecoration(
+        color: AppColors.cardColor,
+        borderRadius: BorderRadius.circular(r.radius(14)),
+        border: Border.all(
+          color: isSelected ? AppColors.primary : Colors.white10,
+          width: isSelected ? 2 : 1,
         ),
       ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(
+            title,
+            style: TextStyle(
+              color: Colors.grey,
+              fontSize: r.fontSize(12),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          SizedBox(height: r.spacing(6)),
+          Text(
+            price,
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: r.fontSize(24),
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          Text(
+            period,
+            style: TextStyle(
+              color: Colors.grey,
+              fontSize: r.fontSize(11),
+            ),
+          ),
+        ],
+      ),
     );
+
+    return GestureDetector(
+      onTap: () => setState(() => _selectedProduct = productId),
+      child: badge != null
+          ? Stack(
+              clipBehavior: Clip.none,
+              children: [
+                card,
+                Positioned(
+                  top: -10,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: Container(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: r.spacing(8),
+                        vertical: r.spacing(3),
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary,
+                        borderRadius: BorderRadius.circular(r.radius(20)),
+                      ),
+                      child: Text(
+                        badge,
+                        style: TextStyle(
+                          color: Colors.black,
+                          fontSize: r.fontSize(10),
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            )
+          : card,
+    );
+  }
+
+  String _priceFor(String productId, String fallback) {
+    try {
+      return SubscriptionService.instance.products
+          .firstWhere((p) => p.id == productId)
+          .price;
+    } catch (_) {
+      return fallback;
+    }
   }
 
   Future<void> _onSubscribe() async {

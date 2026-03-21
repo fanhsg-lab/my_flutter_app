@@ -1488,6 +1488,30 @@ class LocalDB {
     }
   }
 
+  Future<int?> getCurrentLessonIndex() async {
+    final db = await database;
+    try {
+      final result = await db.query('app_meta', where: 'key = ?', whereArgs: ['current_lesson_index']);
+      if (result.isEmpty) return null;
+      final value = result.first['value'] as String?;
+      return value != null ? int.tryParse(value) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  Future<void> setCurrentLessonIndex(int index) async {
+    final db = await database;
+    try {
+      await db.insert('app_meta',
+        {'key': 'current_lesson_index', 'value': index.toString()},
+        conflictAlgorithm: ConflictAlgorithm.replace
+      );
+    } catch (e) {
+      debugPrint("❌ Error setting current_lesson_index: $e");
+    }
+  }
+
   /// Get the source language of the currently selected book ('es', 'en', etc.)
   Future<String> getBookSourceLanguage() async {
     final db = await database;
@@ -1567,6 +1591,54 @@ class LocalDB {
   // =========================================================
   // 💳 SUBSCRIPTION CACHE (offline access)
   // =========================================================
+
+  /// Ensures trial_started_at is set locally and synced to Supabase.
+  /// Call once after the user is authenticated.
+  Future<void> ensureTrialStarted() async {
+    final db = await database;
+
+    // 1. Get or set local trial start date
+    final localRes = await db.query('app_meta', where: 'key = ?', whereArgs: ['trial_started_at']);
+    String localDate;
+    if (localRes.isEmpty) {
+      localDate = DateTime.now().toUtc().toIso8601String();
+      await db.insert('app_meta', {'key': 'trial_started_at', 'value': localDate},
+          conflictAlgorithm: ConflictAlgorithm.replace);
+    } else {
+      localDate = localRes.first['value'] as String;
+    }
+
+    // 2. Sync to Supabase profiles — only if Supabase value is null or local is earlier
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId == null) return;
+    try {
+      final profileRes = await Supabase.instance.client
+          .from('profiles')
+          .select('trial_started_at')
+          .eq('id', userId)
+          .maybeSingle();
+
+      final remoteDate = profileRes?['trial_started_at'] as String?;
+      final localDt = DateTime.parse(localDate);
+      final remoteDt = remoteDate != null ? DateTime.tryParse(remoteDate) : null;
+
+      // Use whichever is earlier (handles reinstalls correctly)
+      final useDate = (remoteDt != null && remoteDt.isBefore(localDt)) ? remoteDate! : localDate;
+
+      if (remoteDate == null || remoteDate != useDate) {
+        await Supabase.instance.client
+            .from('profiles')
+            .upsert({'id': userId, 'trial_started_at': useDate});
+        // Also update local if remote was earlier
+        if (useDate != localDate) {
+          await db.insert('app_meta', {'key': 'trial_started_at', 'value': useDate},
+              conflictAlgorithm: ConflictAlgorithm.replace);
+        }
+      }
+    } catch (e) {
+      debugPrint("⚠️ ensureTrialStarted sync error: $e");
+    }
+  }
 
   /// Get cached subscription state (for offline access)
   Future<Map<String, String?>> getSubscriptionCache() async {

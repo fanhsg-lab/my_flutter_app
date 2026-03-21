@@ -190,8 +190,8 @@ class _SurvivalPageState extends State<SurvivalPage> {
 
       String audioVersion = cleanBase;
       String gameVersion = widget.sourceLanguage == 'es'
-          ? _removeSpanishAccents(cleanBase)
-          : cleanBase;
+          ? _removeGreekAccents(_removeSpanishAccents(cleanBase))
+          : _removeGreekAccents(cleanBase);
       gameVersion = gameVersion.replaceAll(RegExp(r'\s+'), ' ');
 
       if (gameVersion.isNotEmpty) {
@@ -256,7 +256,7 @@ class _SurvivalPageState extends State<SurvivalPage> {
   void _handleInput(String value) {
     if (_slotColors != null) return;
 
-    String cleanValue = value.toUpperCase();
+    String cleanValue = _removeGreekAccents(value.toUpperCase());
     if (widget.sourceLanguage == 'es') cleanValue = _removeSpanishAccents(cleanValue);
 
     if (widget.isHardcore) {

@@ -90,6 +90,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _signOut() async {
     try {
+      SubscriptionService.instance.dispose();
       await GoogleSignIn().signOut();
       await Supabase.instance.client.auth.signOut();
       if (mounted) {
@@ -677,9 +678,9 @@ class _SubscriptionSheetState extends State<_SubscriptionSheet> {
             if (widget.subState.access != AccessLevel.subscribed) ...[
               Row(
                 children: [
-                  Expanded(child: _buildPlanCard(S.monthly, '\$4.99', S.perMonth, kMonthlyProductId)),
+                  Expanded(child: _buildPlanCard(S.monthly, _priceFor(kMonthlyProductId, '€1.00'), S.perMonth, kMonthlyProductId)),
                   const SizedBox(width: 12),
-                  Expanded(child: _buildPlanCard(S.yearly, '\$39.99', S.perYear, kYearlyProductId, badge: S.save33)),
+                  Expanded(child: _buildPlanCard(S.yearly, _priceFor(kYearlyProductId, '€10.00'), S.perYear, kYearlyProductId, badge: S.save33)),
                 ],
               ),
               const SizedBox(height: 20),
@@ -746,39 +747,67 @@ class _SubscriptionSheetState extends State<_SubscriptionSheet> {
 
   Widget _buildPlanCard(String title, String price, String period, String productId, {String? badge}) {
     final isSelected = _selectedProduct == productId;
-    return GestureDetector(
-      onTap: () => setState(() => _selectedProduct = productId),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppColors.background,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: isSelected ? AppColors.primary : Colors.white10,
-            width: isSelected ? 2 : 1,
-          ),
-        ),
-        child: Column(
-          children: [
-            if (badge != null) ...[
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(badge, style: const TextStyle(color: AppColors.primary, fontSize: 10, fontWeight: FontWeight.bold)),
-              ),
-              const SizedBox(height: 8),
-            ],
-            Text(title, style: const TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 6),
-            Text(price, style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
-            Text(period, style: const TextStyle(color: Colors.grey, fontSize: 11)),
-          ],
+    final card = Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: isSelected ? AppColors.primary : Colors.white10,
+          width: isSelected ? 2 : 1,
         ),
       ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(title, style: const TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 6),
+          Text(price, style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+          Text(period, style: const TextStyle(color: Colors.grey, fontSize: 11)),
+        ],
+      ),
     );
+
+    return GestureDetector(
+      onTap: () => setState(() => _selectedProduct = productId),
+      child: badge != null
+          ? Stack(
+              clipBehavior: Clip.none,
+              children: [
+                card,
+                Positioned(
+                  top: -10,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        badge,
+                        style: const TextStyle(color: Colors.black, fontSize: 10, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            )
+          : card,
+    );
+  }
+
+  String _priceFor(String productId, String fallback) {
+    try {
+      return SubscriptionService.instance.products
+          .firstWhere((p) => p.id == productId)
+          .price;
+    } catch (_) {
+      return fallback;
+    }
   }
 
   Future<void> _onSubscribe() async {

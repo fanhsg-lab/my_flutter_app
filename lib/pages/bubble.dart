@@ -148,7 +148,12 @@ class _BubblePageState extends ConsumerState<BubblePage> with TickerProviderStat
   final List<Map<String, dynamic>> _pendingUpdates = [];
 
   bool _isLoading = true;
-  double _userLearningRate = 2.6;
+  // Greek→Foreign = 2.6, Foreign→Greek = 2.7
+  // English books have isReversed pre-flipped by MainScreen, so XOR to get true direction
+  double get _userLearningRate {
+    final isGreekToForeign = widget.isReversed ^ (widget.sourceLanguage == 'en');
+    return isGreekToForeign ? 2.6 : 2.7;
+  }
 
   final FlutterTts _flutterTts = FlutterTts();
 
