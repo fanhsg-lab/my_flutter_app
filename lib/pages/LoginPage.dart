@@ -61,7 +61,6 @@ class _LoginPageState extends State<LoginPage> {
       // 1. Start the interactive Google Sign-In flow
       final GoogleSignIn googleSignIn = GoogleSignIn(
         serverClientId: webClientId,
-        nonce: hashedNonce,
       );
 
       final googleUser = await googleSignIn.signIn();

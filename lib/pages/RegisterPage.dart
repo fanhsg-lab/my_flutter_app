@@ -43,7 +43,6 @@ class _RegisterPageState extends State<RegisterPage> {
 
       final GoogleSignIn googleSignIn = GoogleSignIn(
         serverClientId: webClientId,
-        nonce: hashedNonce,
       );
 
       final googleUser = await googleSignIn.signIn();
