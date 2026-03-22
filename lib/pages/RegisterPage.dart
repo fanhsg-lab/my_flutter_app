@@ -1,3 +1,6 @@
+import 'dart:math';
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:heroicons/heroicons.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -18,16 +21,31 @@ class _RegisterPageState extends State<RegisterPage> {
   final _confirmPasswordController = TextEditingController();
   bool _isLoading = false;
 
+  String _generateNonce([int length = 32]) {
+    const charset = '0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._';
+    final random = Random.secure();
+    return List.generate(length, (_) => charset[random.nextInt(charset.length)]).join();
+  }
+
+  String _sha256ofString(String input) {
+    final bytes = utf8.encode(input);
+    final digest = sha256.convert(bytes);
+    return digest.toString();
+  }
+
   // --- GOOGLE SIGN UP LOGIC (Same as Login) ---
   Future<void> _googleSignUp() async {
     setState(() => _isLoading = true);
     try {
       final webClientId = dotenv.env['GOOGLE_WEB_CLIENT_ID']!;
+      final rawNonce = _generateNonce();
+      final hashedNonce = _sha256ofString(rawNonce);
 
       final GoogleSignIn googleSignIn = GoogleSignIn(
         serverClientId: webClientId,
+        nonce: hashedNonce,
       );
-      
+
       final googleUser = await googleSignIn.signIn();
       if (googleUser == null) {
         setState(() => _isLoading = false);
@@ -44,6 +62,7 @@ class _RegisterPageState extends State<RegisterPage> {
         provider: OAuthProvider.google,
         idToken: idToken,
         accessToken: accessToken,
+        nonce: rawNonce,
       );
 
       if (mounted) {
