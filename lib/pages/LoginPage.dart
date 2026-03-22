@@ -1,9 +1,13 @@
 import 'dart:io' show Platform;
+import 'dart:math';
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:heroicons/heroicons.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import '../theme.dart';
 import 'RegisterPage.dart';
 import 'ForgotPasswordPage.dart';
@@ -75,6 +79,49 @@ class _LoginPageState extends State<LoginPage> {
       }
     } catch (e) {
       if (mounted) _showError('Google Sign In Error: $e');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  String _generateNonce([int length = 32]) {
+    const charset = '0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._';
+    final random = Random.secure();
+    return List.generate(length, (_) => charset[random.nextInt(charset.length)]).join();
+  }
+
+  String _sha256ofString(String input) {
+    final bytes = utf8.encode(input);
+    final digest = sha256.convert(bytes);
+    return digest.toString();
+  }
+
+  Future<void> _appleSignIn() async {
+    setState(() => _isLoading = true);
+    try {
+      final rawNonce = _generateNonce();
+      final hashedNonce = _sha256ofString(rawNonce);
+
+      final credential = await SignInWithApple.getAppleIDCredential(
+        scopes: [
+          AppleIDAuthorizationScopes.email,
+          AppleIDAuthorizationScopes.fullName,
+        ],
+        nonce: hashedNonce,
+      );
+
+      final idToken = credential.identityToken;
+      if (idToken == null) throw 'No identity token found.';
+
+      await Supabase.instance.client.auth.signInWithIdToken(
+        provider: OAuthProvider.apple,
+        idToken: idToken,
+        nonce: rawNonce,
+      );
+
+      if (mounted) Navigator.of(context).pushReplacementNamed('/home');
+    } catch (e) {
+      if (mounted) _showError('Apple Sign In Error: $e');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -199,12 +246,23 @@ class _LoginPageState extends State<LoginPage> {
                       side: BorderSide.none,
                     ),
                     onPressed: _isLoading ? null : _googleSignIn,
-                    // Note: You can add a google logo asset here if you have one
-                    icon: const Icon(Icons.g_mobiledata, color: Colors.black, size: 32), 
+                    icon: const Icon(Icons.g_mobiledata, color: Colors.black, size: 32),
                     label: const Text("Sign in with Google", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black)),
                   ),
                 ),
-                
+
+                if (Platform.isIOS) ...[
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 56,
+                    child: SignInWithAppleButton(
+                      onPressed: _isLoading ? () {} : _appleSignIn,
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                  ),
+                ],
+
                 const SizedBox(height: 20),
                 
                 Row(
