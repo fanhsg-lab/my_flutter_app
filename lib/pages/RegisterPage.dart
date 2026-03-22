@@ -1,6 +1,4 @@
-import 'dart:math';
-import 'dart:convert';
-import 'package:crypto/crypto.dart';
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:heroicons/heroicons.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -21,48 +19,37 @@ class _RegisterPageState extends State<RegisterPage> {
   final _confirmPasswordController = TextEditingController();
   bool _isLoading = false;
 
-  String _generateNonce([int length = 32]) {
-    const charset = '0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._';
-    final random = Random.secure();
-    return List.generate(length, (_) => charset[random.nextInt(charset.length)]).join();
-  }
-
-  String _sha256ofString(String input) {
-    final bytes = utf8.encode(input);
-    final digest = sha256.convert(bytes);
-    return digest.toString();
-  }
-
   // --- GOOGLE SIGN UP LOGIC (Same as Login) ---
   Future<void> _googleSignUp() async {
     setState(() => _isLoading = true);
     try {
-      final webClientId = dotenv.env['GOOGLE_WEB_CLIENT_ID']!;
+      if (Platform.isIOS) {
+        await Supabase.instance.client.auth.signInWithOAuth(
+          OAuthProvider.google,
+        );
+      } else {
+        final webClientId = dotenv.env['GOOGLE_WEB_CLIENT_ID']!;
+        final GoogleSignIn googleSignIn = GoogleSignIn(
+          serverClientId: webClientId,
+        );
 
-      final GoogleSignIn googleSignIn = GoogleSignIn(
-        serverClientId: webClientId,
-      );
+        final googleUser = await googleSignIn.signIn();
+        if (googleUser == null) {
+          setState(() => _isLoading = false);
+          return;
+        }
 
-      final googleUser = await googleSignIn.signIn();
-      if (googleUser == null) {
-        setState(() => _isLoading = false);
-        return;
-      }
+        final googleAuth = await googleUser.authentication;
+        final idToken = googleAuth.idToken;
+        if (idToken == null) throw 'No ID Token found.';
 
-      final googleAuth = await googleUser.authentication;
-      final accessToken = googleAuth.accessToken;
-      final idToken = googleAuth.idToken;
+        await Supabase.instance.client.auth.signInWithIdToken(
+          provider: OAuthProvider.google,
+          idToken: idToken,
+          accessToken: googleAuth.accessToken,
+        );
 
-      if (idToken == null) throw 'No ID Token found.';
-
-      await Supabase.instance.client.auth.signInWithIdToken(
-        provider: OAuthProvider.google,
-        idToken: idToken,
-        accessToken: accessToken,
-      );
-
-      if (mounted) {
-        Navigator.of(context).pushReplacementNamed('/home');
+        if (mounted) Navigator.of(context).pushReplacementNamed('/home');
       }
     } catch (e) {
       if (mounted) _showError('Google Sign Up Error: $e');

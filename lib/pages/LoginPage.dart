@@ -1,6 +1,4 @@
-import 'dart:math';
-import 'dart:convert';
-import 'package:crypto/crypto.dart';
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:heroicons/heroicons.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -34,60 +32,46 @@ class _LoginPageState extends State<LoginPage> {
             MaterialPageRoute(builder: (context) => const UpdatePasswordPage()),
           );
         }
+      } else if (event == AuthChangeEvent.signedIn) {
+        if (mounted) Navigator.of(context).pushReplacementNamed('/home');
       }
     });
-  }
-
-  String _generateNonce([int length = 32]) {
-    const charset = '0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._';
-    final random = Random.secure();
-    return List.generate(length, (_) => charset[random.nextInt(charset.length)]).join();
-  }
-
-  String _sha256ofString(String input) {
-    final bytes = utf8.encode(input);
-    final digest = sha256.convert(bytes);
-    return digest.toString();
   }
 
   // --- GOOGLE SIGN IN LOGIC ---
   Future<void> _googleSignIn() async {
     setState(() => _isLoading = true);
     try {
-      final webClientId = dotenv.env['GOOGLE_WEB_CLIENT_ID']!;
+      if (Platform.isIOS) {
+        // iOS: use OAuth flow (handles nonce automatically)
+        await Supabase.instance.client.auth.signInWithOAuth(
+          OAuthProvider.google,
+        );
+        // Auth state change listener in initState will handle navigation
+      } else {
+        // Android: use native Google Sign In
+        final webClientId = dotenv.env['GOOGLE_WEB_CLIENT_ID']!;
+        final GoogleSignIn googleSignIn = GoogleSignIn(
+          serverClientId: webClientId,
+        );
 
-      // 1. Start the interactive Google Sign-In flow
-      final GoogleSignIn googleSignIn = GoogleSignIn(
-        serverClientId: webClientId,
-      );
+        final googleUser = await googleSignIn.signIn();
+        if (googleUser == null) {
+          setState(() => _isLoading = false);
+          return;
+        }
 
-      final googleUser = await googleSignIn.signIn();
+        final googleAuth = await googleUser.authentication;
+        final idToken = googleAuth.idToken;
+        if (idToken == null) throw 'No ID Token found.';
 
-      // If user cancelled the popup
-      if (googleUser == null) {
-        setState(() => _isLoading = false);
-        return;
-      }
+        await Supabase.instance.client.auth.signInWithIdToken(
+          provider: OAuthProvider.google,
+          idToken: idToken,
+          accessToken: googleAuth.accessToken,
+        );
 
-      // 2. Get the authentication tokens
-      final googleAuth = await googleUser.authentication;
-      final accessToken = googleAuth.accessToken;
-      final idToken = googleAuth.idToken;
-
-      if (idToken == null) {
-        throw 'No ID Token found.';
-      }
-
-      // 3. Send tokens to Supabase to create the session
-      await Supabase.instance.client.auth.signInWithIdToken(
-        provider: OAuthProvider.google,
-        idToken: idToken,
-        accessToken: accessToken,
-      );
-
-      // 4. Success! Navigate to Home
-      if (mounted) {
-        Navigator.of(context).pushReplacementNamed('/home');
+        if (mounted) Navigator.of(context).pushReplacementNamed('/home');
       }
     } catch (e) {
       if (mounted) _showError('Google Sign In Error: $e');
