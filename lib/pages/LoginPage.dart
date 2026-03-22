@@ -55,8 +55,6 @@ class _LoginPageState extends State<LoginPage> {
     setState(() => _isLoading = true);
     try {
       final webClientId = dotenv.env['GOOGLE_WEB_CLIENT_ID']!;
-      final rawNonce = _generateNonce();
-      final hashedNonce = _sha256ofString(rawNonce);
 
       // 1. Start the interactive Google Sign-In flow
       final GoogleSignIn googleSignIn = GoogleSignIn(
@@ -85,7 +83,6 @@ class _LoginPageState extends State<LoginPage> {
         provider: OAuthProvider.google,
         idToken: idToken,
         accessToken: accessToken,
-        nonce: rawNonce,
       );
 
       // 4. Success! Navigate to Home

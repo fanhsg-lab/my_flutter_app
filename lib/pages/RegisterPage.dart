@@ -38,8 +38,6 @@ class _RegisterPageState extends State<RegisterPage> {
     setState(() => _isLoading = true);
     try {
       final webClientId = dotenv.env['GOOGLE_WEB_CLIENT_ID']!;
-      final rawNonce = _generateNonce();
-      final hashedNonce = _sha256ofString(rawNonce);
 
       final GoogleSignIn googleSignIn = GoogleSignIn(
         serverClientId: webClientId,
@@ -61,7 +59,6 @@ class _RegisterPageState extends State<RegisterPage> {
         provider: OAuthProvider.google,
         idToken: idToken,
         accessToken: accessToken,
-        nonce: rawNonce,
       );
 
       if (mounted) {
