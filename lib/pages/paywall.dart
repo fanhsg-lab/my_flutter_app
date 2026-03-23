@@ -234,7 +234,13 @@ class _PaywallOverlayState extends State<PaywallOverlay> {
   }
 
   String _priceFor(String productId, String fallback) {
-    return fallback;
+    try {
+      return SubscriptionService.instance.products
+          .firstWhere((p) => p.id == productId)
+          .price;
+    } catch (_) {
+      return fallback;
+    }
   }
 
   Future<void> _onSubscribe() async {
