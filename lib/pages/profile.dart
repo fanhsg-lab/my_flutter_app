@@ -801,13 +801,7 @@ class _SubscriptionSheetState extends State<_SubscriptionSheet> {
   }
 
   String _priceFor(String productId, String fallback) {
-    try {
-      return SubscriptionService.instance.products
-          .firstWhere((p) => p.id == productId)
-          .price;
-    } catch (_) {
-      return fallback;
-    }
+    return fallback;
   }
 
   Future<void> _onSubscribe() async {
