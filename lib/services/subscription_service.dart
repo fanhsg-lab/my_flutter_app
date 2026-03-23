@@ -84,8 +84,6 @@ class SubscriptionService {
       await _loadProducts();
     } else {
       debugPrint("⚠️ In-app purchases not available");
-      // DEBUG: force locked on simulator to test paywall UI — remove before release
-      state.value = const SubscriptionState(access: AccessLevel.locked);
     }
   }
 
@@ -175,9 +173,6 @@ class SubscriptionService {
     }
     _products = response.productDetails.toList();
     debugPrint("✅ Loaded ${_products.length} products");
-    for (final p in _products) {
-      debugPrint("💰 Product: ${p.id} | price: ${p.price} | raw: ${p.rawPrice} | currency: ${p.currencyCode}");
-    }
   }
 
   void _listenToPurchaseUpdates() {
