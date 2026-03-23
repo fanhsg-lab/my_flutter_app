@@ -37,33 +37,81 @@ Deno.serve(async (req: Request) => {
     console.log("User found:", !!user);
     if (authError || !user) return json({ error: "Unauthorized", detail: authError?.message }, 401);
 
-    // 3. Get Google access token
-    const serviceAccount = JSON.parse(Deno.env.get("GOOGLE_SERVICE_ACCOUNT_JSON")!);
-    const googleToken = await getGoogleAccessToken(serviceAccount);
+    let isActive = false;
+    let expiresAt: string | null = null;
 
-    // 4. Verify with Google Play API
-    const googleUrl = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${PACKAGE_NAME}/purchases/subscriptionsv2/tokens/${purchase_token}`;
-    const googleRes = await fetch(googleUrl, {
-      headers: { Authorization: `Bearer ${googleToken}` },
-    });
+    if (platform === "ios") {
+      // 3. Verify with Apple
+      const sharedSecret = Deno.env.get("APPLE_SHARED_SECRET")!;
+      const applePayload = {
+        "receipt-data": purchase_token,
+        "password": sharedSecret,
+        "exclude-old-transactions": true,
+      };
 
-    if (!googleRes.ok) {
-      const err = await googleRes.text();
-      console.error("Google verification failed:", err);
-      return json({ error: "Google verification failed", detail: err }, 400);
+      // Try production first
+      let appleRes = await fetch("https://buy.itunes.apple.com/verifyReceipt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(applePayload),
+      });
+      let appleData = await appleRes.json();
+
+      // Status 21007 = sandbox receipt, retry with sandbox URL (TestFlight)
+      if (appleData.status === 21007) {
+        appleRes = await fetch("https://sandbox.itunes.apple.com/verifyReceipt", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(applePayload),
+        });
+        appleData = await appleRes.json();
+      }
+
+      if (appleData.status !== 0) {
+        console.error("Apple verification failed, status:", appleData.status);
+        return json({ error: "Apple verification failed", status: appleData.status }, 400);
+      }
+
+      // Find the latest receipt for our product
+      const latestReceipts: Array<Record<string, string>> = appleData.latest_receipt_info ?? [];
+      const matching = latestReceipts
+        .filter((r) => r.product_id === product_id)
+        .sort((a, b) => Number(b.expires_date_ms) - Number(a.expires_date_ms));
+
+      if (matching.length === 0) {
+        return json({ error: "No matching receipt found for product" }, 400);
+      }
+
+      const latest = matching[0];
+      expiresAt = new Date(Number(latest.expires_date_ms)).toISOString();
+      isActive = Number(latest.expires_date_ms) > Date.now();
+
+    } else {
+      // 3. Get Google access token
+      const serviceAccount = JSON.parse(Deno.env.get("GOOGLE_SERVICE_ACCOUNT_JSON")!);
+      const googleToken = await getGoogleAccessToken(serviceAccount);
+
+      // 4. Verify with Google Play API
+      const googleUrl = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${PACKAGE_NAME}/purchases/subscriptionsv2/tokens/${purchase_token}`;
+      const googleRes = await fetch(googleUrl, {
+        headers: { Authorization: `Bearer ${googleToken}` },
+      });
+
+      if (!googleRes.ok) {
+        const err = await googleRes.text();
+        console.error("Google verification failed:", err);
+        return json({ error: "Google verification failed", detail: err }, 400);
+      }
+
+      const googleData = await googleRes.json();
+      const lineItem = googleData.lineItems?.[0];
+      expiresAt = lineItem?.expiryTime ? new Date(lineItem.expiryTime).toISOString() : null;
+      const state = googleData.subscriptionState ?? "";
+      isActive = state === "SUBSCRIPTION_STATE_ACTIVE" ||
+                 state === "SUBSCRIPTION_STATE_IN_GRACE_PERIOD";
     }
 
-    const googleData = await googleRes.json();
-    console.log("Google response:", JSON.stringify(googleData));
-
-    // 5. Extract expiry and status
-    const lineItem = googleData.lineItems?.[0];
-    const expiresAt = lineItem?.expiryTime ? new Date(lineItem.expiryTime).toISOString() : null;
-    const state = googleData.subscriptionState ?? "";
-    const isActive = state === "SUBSCRIPTION_STATE_ACTIVE" ||
-                     state === "SUBSCRIPTION_STATE_IN_GRACE_PERIOD";
-
-    // 6. Save to subscriptions table
+    // 5. Save to subscriptions table
     const adminClient = createClient(supabaseUrl, serviceKey);
     const { error: upsertError } = await adminClient.from("subscriptions").upsert({
       user_id: user.id,
