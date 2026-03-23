@@ -1564,6 +1564,23 @@ class LocalDB {
   Future<String?> getDisplayName() async {
     final db = await database;
     try {
+      // Try fetching from Supabase first
+      final userId = Supabase.instance.client.auth.currentUser?.id;
+      if (userId != null) {
+        final res = await Supabase.instance.client
+            .from('profiles')
+            .select('display_name')
+            .eq('id', userId)
+            .maybeSingle();
+        final remote = res?['display_name'] as String?;
+        if (remote != null && remote.isNotEmpty) {
+          // Cache locally
+          await db.insert('app_meta', {'key': 'display_name', 'value': remote},
+              conflictAlgorithm: ConflictAlgorithm.replace);
+          return remote;
+        }
+      }
+      // Fall back to local cache
       final result = await db.query('app_meta',
         where: 'key = ?',
         whereArgs: ['display_name']
@@ -1572,17 +1589,36 @@ class LocalDB {
       return result.first['value'] as String?;
     } catch (e) {
       debugPrint("❌ Error getting display_name: $e");
-      return null;
+      // Fall back to local cache on error
+      try {
+        final db2 = await database;
+        final result = await db2.query('app_meta',
+          where: 'key = ?',
+          whereArgs: ['display_name']
+        );
+        if (result.isEmpty) return null;
+        return result.first['value'] as String?;
+      } catch (_) {
+        return null;
+      }
     }
   }
 
   Future<void> setDisplayName(String name) async {
     final db = await database;
     try {
+      // Save locally
       await db.insert('app_meta',
         {'key': 'display_name', 'value': name},
         conflictAlgorithm: ConflictAlgorithm.replace
       );
+      // Sync to Supabase
+      final userId = Supabase.instance.client.auth.currentUser?.id;
+      if (userId != null) {
+        await Supabase.instance.client
+            .from('profiles')
+            .upsert({'id': userId, 'display_name': name});
+      }
     } catch (e) {
       debugPrint("❌ Error setting display_name: $e");
     }
