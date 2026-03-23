@@ -678,9 +678,9 @@ class _SubscriptionSheetState extends State<_SubscriptionSheet> {
             if (widget.subState.access != AccessLevel.subscribed) ...[
               Row(
                 children: [
-                  Expanded(child: _buildPlanCard(S.monthly, _priceFor(kMonthlyProductId, '€1.00'), S.perMonth, kMonthlyProductId)),
+                  Expanded(child: _buildPlanCard(S.monthly, _priceFor(kMonthlyProductId, '€1.99'), S.perMonth, kMonthlyProductId)),
                   const SizedBox(width: 12),
-                  Expanded(child: _buildPlanCard(S.yearly, _priceFor(kYearlyProductId, '€10.00'), S.perYear, kYearlyProductId, badge: S.save33)),
+                  Expanded(child: _buildPlanCard(S.yearly, _priceFor(kYearlyProductId, '€14.99'), S.perYear, kYearlyProductId, badge: S.save33)),
                 ],
               ),
               const SizedBox(height: 20),

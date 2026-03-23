@@ -72,7 +72,7 @@ class _PaywallOverlayState extends State<PaywallOverlay> {
                   children: [
                     Expanded(child: _buildPlanCard(
                       title: S.monthly,
-                      price: _priceFor(kMonthlyProductId, '€1.00'),
+                      price: _priceFor(kMonthlyProductId, '€1.99'),
                       period: S.perMonth,
                       productId: kMonthlyProductId,
                       r: r,
@@ -80,7 +80,7 @@ class _PaywallOverlayState extends State<PaywallOverlay> {
                     SizedBox(width: r.spacing(12)),
                     Expanded(child: _buildPlanCard(
                       title: S.yearly,
-                      price: _priceFor(kYearlyProductId, '€10.00'),
+                      price: _priceFor(kYearlyProductId, '€14.99'),
                       period: S.perYear,
                       productId: kYearlyProductId,
                       badge: S.save33,
