@@ -638,7 +638,7 @@ class _MainScreenState extends State<MainScreen> {
                                                           ],
                                                         ),
                                                       ),
-                                                      Text(_languageFlag(book.sourceLanguage), style: const TextStyle(fontSize: 20, fontFamily: '')),
+                                                      Text(_languageFlag(book.sourceLanguage), style: const TextStyle(fontSize: 20)),
                                                       if (isSelected) ...[
                                                         const SizedBox(width: 6),
                                                         const HeroIcon(HeroIcons.checkCircle, color: AppColors.primary, size: 16, style: HeroIconStyle.solid),
@@ -1004,7 +1004,7 @@ class _MainScreenState extends State<MainScreen> {
                                                           ),
                                                           child: Row(
                                                             children: [
-                                                              Text("💀", style: TextStyle(fontSize: r.fontSize(20), fontFamily: '')),
+                                                              Text("💀", style: TextStyle(fontSize: r.fontSize(20))),
                                                               SizedBox(width: r.spacing(12)),
                                                               Expanded(
                                                                 child: Column(

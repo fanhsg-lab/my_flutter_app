@@ -373,7 +373,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             children: [
               Text(
                 isGreek ? '🇬🇷 Ελ' : '🇬🇧 En',
-                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14, fontFamily: ''),
+                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
               ),
               const SizedBox(width: 4),
               const HeroIcon(HeroIcons.arrowsRightLeft, color: AppColors.primary, size: 18, style: HeroIconStyle.outline),
