@@ -173,6 +173,9 @@ class SubscriptionService {
     }
     _products = response.productDetails.toList();
     debugPrint("✅ Loaded ${_products.length} products");
+    for (final p in _products) {
+      debugPrint("💰 Product: ${p.id} | price: ${p.price} | raw: ${p.rawPrice} | currency: ${p.currencyCode}");
+    }
   }
 
   void _listenToPurchaseUpdates() {
