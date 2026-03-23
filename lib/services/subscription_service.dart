@@ -84,6 +84,8 @@ class SubscriptionService {
       await _loadProducts();
     } else {
       debugPrint("⚠️ In-app purchases not available");
+      // DEBUG: force locked on simulator to test paywall UI — remove before release
+      state.value = const SubscriptionState(access: AccessLevel.locked);
     }
   }
 
