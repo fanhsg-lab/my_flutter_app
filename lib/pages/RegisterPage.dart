@@ -265,24 +265,24 @@ class _RegisterPageState extends State<RegisterPage> {
 
                 const SizedBox(height: 20),
 
-                // GOOGLE BUTTON
-                SizedBox(
-                  width: double.infinity,
-                  height: 56,
-                  child: OutlinedButton.icon(
-                    style: OutlinedButton.styleFrom(
-                      backgroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                      side: BorderSide.none,
+                // GOOGLE BUTTON (Android only)
+                if (!Platform.isIOS)
+                  SizedBox(
+                    width: double.infinity,
+                    height: 56,
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        side: BorderSide.none,
+                      ),
+                      onPressed: _isLoading ? null : _googleSignUp,
+                      icon: const Icon(Icons.g_mobiledata, color: Colors.black, size: 32),
+                      label: const Text("Sign up with Google", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black)),
                     ),
-                    onPressed: _isLoading ? null : _googleSignUp,
-                    icon: const Icon(Icons.g_mobiledata, color: Colors.black, size: 32),
-                    label: const Text("Sign up with Google", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black)),
                   ),
-                ),
 
                 if (Platform.isIOS) ...[
-                  const SizedBox(height: 16),
                   SizedBox(
                     width: double.infinity,
                     height: 56,
