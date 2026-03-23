@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:country_flags/country_flags.dart';
+import 'package:lucide_icons/lucide_icons.dart';
 import 'package:heroicons/heroicons.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme.dart';
@@ -372,7 +372,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              CountryFlag.fromCountryCode(isGreek ? 'GR' : 'GB', height: 16, width: 22, borderRadius: 3),
+              const Icon(LucideIcons.flag, size: 14, color: Colors.white),
               const SizedBox(width: 4),
               Text(
                 isGreek ? 'Ελ' : 'En',

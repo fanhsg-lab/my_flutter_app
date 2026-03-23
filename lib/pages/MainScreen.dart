@@ -1,5 +1,5 @@
 import 'dart:math' as math;
-import 'package:country_flags/country_flags.dart';
+import 'package:lucide_icons/lucide_icons.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:heroicons/heroicons.dart';
@@ -1005,7 +1005,7 @@ class _MainScreenState extends State<MainScreen> {
                                                           ),
                                                           child: Row(
                                                             children: [
-                                                              HeroIcon(HeroIcons.bolt, color: _hardcore ? Colors.redAccent : Colors.white54, size: r.fontSize(22), style: HeroIconStyle.solid),
+                                                              Icon(LucideIcons.skull, color: _hardcore ? Colors.redAccent : Colors.white54, size: r.fontSize(22)),
                                                               SizedBox(width: r.spacing(12)),
                                                               Expanded(
                                                                 child: Column(
@@ -1297,22 +1297,28 @@ class _MainScreenState extends State<MainScreen> {
   String _languageCode(String lang) {
     switch (lang) {
       case 'es': return 'ES';
-      case 'en': return 'GB';
+      case 'en': return 'EN';
       case 'fr': return 'FR';
       case 'de': return 'DE';
       case 'it': return 'IT';
       case 'pt': return 'PT';
       case 'el': return 'GR';
-      case 'ja': return 'JP';
-      case 'zh': return 'CN';
-      case 'ko': return 'KR';
-      default:   return 'UN';
+      case 'ja': return 'JA';
+      case 'zh': return 'ZH';
+      case 'ko': return 'KO';
+      default:   return '??';
     }
   }
 
   Widget _languageFlag(String lang) {
-    final code = _languageCode(lang);
-    return CountryFlag.fromCountryCode(code, height: 20, width: 28, borderRadius: 4);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Icon(LucideIcons.flag, size: 14, color: AppColors.primary),
+        const SizedBox(width: 3),
+        Text(_languageCode(lang), style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.primary)),
+      ],
+    );
   }
 
   Widget _buildLessonCard(LessonData lesson, bool isActive) {
