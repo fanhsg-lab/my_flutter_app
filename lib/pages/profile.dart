@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:country_flags/country_flags.dart';
 import 'package:heroicons/heroicons.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme.dart';
@@ -371,10 +372,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
-                isGreek ? '🇬🇷' : '🇬🇧',
-                style: const TextStyle(fontSize: 14, fontFamily: 'Apple Color Emoji'),
-              ),
+              CountryFlag.fromCountryCode(isGreek ? 'GR' : 'GB', height: 16, width: 22, borderRadius: 3),
               const SizedBox(width: 4),
               Text(
                 isGreek ? 'Ελ' : 'En',

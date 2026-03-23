@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'package:country_flags/country_flags.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:heroicons/heroicons.dart';
@@ -638,7 +639,7 @@ class _MainScreenState extends State<MainScreen> {
                                                           ],
                                                         ),
                                                       ),
-                                                      Text(_languageFlag(book.sourceLanguage), style: const TextStyle(fontSize: 20, fontFamily: 'Apple Color Emoji')),
+                                                      _languageFlag(book.sourceLanguage),
                                                       if (isSelected) ...[
                                                         const SizedBox(width: 6),
                                                         const HeroIcon(HeroIcons.checkCircle, color: AppColors.primary, size: 16, style: HeroIconStyle.solid),
@@ -1004,7 +1005,7 @@ class _MainScreenState extends State<MainScreen> {
                                                           ),
                                                           child: Row(
                                                             children: [
-                                                              Text("💀", style: TextStyle(fontSize: r.fontSize(20), fontFamily: 'Apple Color Emoji')),
+                                                              HeroIcon(HeroIcons.bolt, color: _hardcore ? Colors.redAccent : Colors.white54, size: r.fontSize(22), style: HeroIconStyle.solid),
                                                               SizedBox(width: r.spacing(12)),
                                                               Expanded(
                                                                 child: Column(
@@ -1293,20 +1294,25 @@ class _MainScreenState extends State<MainScreen> {
 
 
 
-  String _languageFlag(String lang) {
+  String _languageCode(String lang) {
     switch (lang) {
-      case 'es': return '🇪🇸';
-      case 'en': return '🇬🇧';
-      case 'fr': return '🇫🇷';
-      case 'de': return '🇩🇪';
-      case 'it': return '🇮🇹';
-      case 'pt': return '🇵🇹';
-      case 'el': return '🇬🇷';
-      case 'ja': return '🇯🇵';
-      case 'zh': return '🇨🇳';
-      case 'ko': return '🇰🇷';
-      default:   return '🌐';
+      case 'es': return 'ES';
+      case 'en': return 'GB';
+      case 'fr': return 'FR';
+      case 'de': return 'DE';
+      case 'it': return 'IT';
+      case 'pt': return 'PT';
+      case 'el': return 'GR';
+      case 'ja': return 'JP';
+      case 'zh': return 'CN';
+      case 'ko': return 'KR';
+      default:   return 'UN';
     }
+  }
+
+  Widget _languageFlag(String lang) {
+    final code = _languageCode(lang);
+    return CountryFlag.fromCountryCode(code, height: 20, width: 28, borderRadius: 4);
   }
 
   Widget _buildLessonCard(LessonData lesson, bool isActive) {
