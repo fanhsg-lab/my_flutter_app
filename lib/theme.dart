@@ -22,7 +22,9 @@ class AppColors {
 // A ready-to-use Theme Data for your main.dart
 final ThemeData appTheme = ThemeData(
   brightness: Brightness.dark,
-  textTheme: GoogleFonts.interTextTheme(ThemeData.dark().textTheme),
+  textTheme: GoogleFonts.interTextTheme(ThemeData.dark().textTheme).apply(
+    fontFamilyFallback: ['Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji'],
+  ),
   primaryColor: AppColors.primary,
   scaffoldBackgroundColor: AppColors.background,
   
