@@ -127,7 +127,7 @@ flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
   image_path: "assets/icons/BullLogo.png"
-  image_path_ios: "assets/icons/IosBull2.png"
+  image_path_ios: "assets/icons/BullIOS.png"
   min_sdk_android: 21
   adaptive_icon_background: "#FFFFFF"
   adaptive_icon_foreground: "assets/icons/BullLogo.png"
