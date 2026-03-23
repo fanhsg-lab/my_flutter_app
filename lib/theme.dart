@@ -19,12 +19,32 @@ class AppColors {
   static const Color error = Color(0xFFEF5350);   // Red
 }
 
+TextTheme _applyEmojiFallback(TextTheme theme) {
+  const fallback = ['Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji'];
+  TextStyle? f(TextStyle? s) => s?.copyWith(fontFamilyFallback: fallback);
+  return theme.copyWith(
+    displayLarge: f(theme.displayLarge),
+    displayMedium: f(theme.displayMedium),
+    displaySmall: f(theme.displaySmall),
+    headlineLarge: f(theme.headlineLarge),
+    headlineMedium: f(theme.headlineMedium),
+    headlineSmall: f(theme.headlineSmall),
+    titleLarge: f(theme.titleLarge),
+    titleMedium: f(theme.titleMedium),
+    titleSmall: f(theme.titleSmall),
+    bodyLarge: f(theme.bodyLarge),
+    bodyMedium: f(theme.bodyMedium),
+    bodySmall: f(theme.bodySmall),
+    labelLarge: f(theme.labelLarge),
+    labelMedium: f(theme.labelMedium),
+    labelSmall: f(theme.labelSmall),
+  );
+}
+
 // A ready-to-use Theme Data for your main.dart
 final ThemeData appTheme = ThemeData(
   brightness: Brightness.dark,
-  textTheme: GoogleFonts.interTextTheme(ThemeData.dark().textTheme).apply(
-    fontFamilyFallback: ['Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji'],
-  ),
+  textTheme: _applyEmojiFallback(GoogleFonts.interTextTheme(ThemeData.dark().textTheme)),
   primaryColor: AppColors.primary,
   scaffoldBackgroundColor: AppColors.background,
   
