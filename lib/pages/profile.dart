@@ -372,7 +372,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                isGreek ? '🇬🇷 Ελ' : '🇬🇧 En',
+                isGreek ? '🇬🇷' : '🇬🇧',
+                style: const TextStyle(fontSize: 14, fontFamily: 'Apple Color Emoji'),
+              ),
+              const SizedBox(width: 4),
+              Text(
+                isGreek ? 'Ελ' : 'En',
                 style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
               ),
               const SizedBox(width: 4),
