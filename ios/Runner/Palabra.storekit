@@ -1,0 +1,106 @@
+{
+  "identifier" : "1A2B3C4D-5E6F-7A8B-9C0D-1E2F3A4B5C6D",
+  "nonConsumableProducts" : [],
+  "nonRenewingSubscriptions" : [],
+  "products" : [],
+  "settings" : {
+    "_askToBuyEnabled" : false,
+    "_billingGracePeriodEnabled" : false,
+    "_customerInfoCacheEnabled" : true,
+    "_failTransactionsEnabled" : false,
+    "_failureRate" : 0,
+    "_interruptedPurchasesEnabled" : false,
+    "_locale" : "en_US",
+    "_storefront" : "GRC",
+    "_storeKitErrors" : [
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Load products"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Purchase"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Verify receipts"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "App Store sync"
+      },
+      {
+        "current" : null,
+        "enabled" : false,
+        "name" : "Restore purchases"
+      }
+    ]
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "1A2B3C4D",
+      "localizations" : [],
+      "name" : "Palabra Premium",
+      "products" : [
+        {
+          "adHocOffers" : [],
+          "displayPrice" : "1.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "1A2B3C4D5E6F7A8B",
+          "introductoryOffer" : {
+            "duration" : 2,
+            "offerID" : "",
+            "paymentMode" : "FREE_TRIAL",
+            "periodUnit" : "MONTH"
+          },
+          "localizations" : [
+            {
+              "description" : "Monthly subscription to Palabra Premium",
+              "displayName" : "Palabra Monthly",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "palabra_monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Palabra Monthly",
+          "subscriptionGroupID" : "1A2B3C4D",
+          "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [],
+          "displayPrice" : "14.99",
+          "familyShareable" : false,
+          "groupNumber" : 2,
+          "internalID" : "2B3C4D5E6F7A8B9C",
+          "introductoryOffer" : {
+            "duration" : 2,
+            "offerID" : "",
+            "paymentMode" : "FREE_TRIAL",
+            "periodUnit" : "MONTH"
+          },
+          "localizations" : [
+            {
+              "description" : "Yearly subscription to Palabra Premium",
+              "displayName" : "Palabra Yearly",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "palabra_yearly",
+          "recurringSubscriptionPeriod" : "P1Y",
+          "referenceName" : "Palabra Yearly",
+          "subscriptionGroupID" : "1A2B3C4D",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 2,
+    "minor" : 0
+  }
+}
