@@ -163,7 +163,13 @@ class SubscriptionService {
   }
 
   Future<void> _loadProducts() async {
+    debugPrint("🛒 Querying products: $kProductIds");
+    final bool available = await InAppPurchase.instance.isAvailable();
+    debugPrint("🛒 InAppPurchase available: $available");
     final response = await InAppPurchase.instance.queryProductDetails(kProductIds);
+    debugPrint("🛒 Response error: ${response.error}");
+    debugPrint("🛒 Not found IDs: ${response.notFoundIDs}");
+    debugPrint("🛒 Found products: ${response.productDetails.map((p) => '${p.id} (${p.price})').toList()}");
     if (response.error != null) {
       debugPrint("⚠️ Error loading products: ${response.error}");
       return;
