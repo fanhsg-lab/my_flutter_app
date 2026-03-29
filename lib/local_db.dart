@@ -393,7 +393,7 @@ class LocalDB {
   Future<String> getWordDirection() async {
     final db = await database;
     final res = await db.query('app_meta', where: 'key = ?', whereArgs: ['word_direction']);
-    return res.isNotEmpty ? res.first['value'] as String : 'normal';
+    return res.isNotEmpty ? res.first['value'] as String : 'reverse';
   }
 
   Future<void> setWordDirection(String direction) async {

@@ -93,7 +93,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
+        backgroundColor: AppColors.cardColor,
         title: const Text('Delete Account', style: TextStyle(color: Colors.white)),
         content: const Text(
           'This will permanently delete your account and all your progress. This cannot be undone.',
@@ -111,13 +111,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (confirmed != true) return;
     try {
       final userId = Supabase.instance.client.auth.currentUser?.id;
-      if (userId != null) {
-        await Supabase.instance.client.functions.invoke('delete-account', body: {'user_id': userId});
-      }
+      // Stop all background activity first
       SubscriptionService.instance.dispose();
       await GoogleSignIn().signOut();
       await Supabase.instance.client.auth.signOut();
       await LocalDB.instance.clearAllLocalData();
+      // Now delete server data — no background process can recreate it
+      if (userId != null) {
+        await Supabase.instance.client.rpc('delete_user_account', params: {'p_user_id': userId});
+      }
       if (mounted) Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
