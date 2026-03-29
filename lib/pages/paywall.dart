@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:heroicons/heroicons.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../theme.dart';
 import '../responsive.dart';
 import '../services/app_strings.dart';
@@ -135,6 +136,24 @@ class _PaywallOverlayState extends State<PaywallOverlay> {
                       fontSize: r.fontSize(13),
                     ),
                   ),
+                ),
+
+                SizedBox(height: r.spacing(8)),
+
+                // Privacy Policy & Terms of Use
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    TextButton(
+                      onPressed: () => launchUrl(Uri.parse('https://fanhsg-lab.github.io/palabra-privacy-policy/')),
+                      child: Text('Privacy Policy', style: TextStyle(color: Colors.grey, fontSize: r.fontSize(11))),
+                    ),
+                    Text('·', style: TextStyle(color: Colors.grey, fontSize: r.fontSize(11))),
+                    TextButton(
+                      onPressed: () => launchUrl(Uri.parse('https://www.apple.com/legal/internet-services/itunes/dev/stdeula/')),
+                      child: Text('Terms of Use', style: TextStyle(color: Colors.grey, fontSize: r.fontSize(11))),
+                    ),
+                  ],
                 ),
               ],
             ),

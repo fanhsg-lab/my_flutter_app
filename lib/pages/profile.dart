@@ -89,6 +89,41 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  Future<void> _deleteAccount() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: const Text('Delete Account', style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'This will permanently delete your account and all your progress. This cannot be undone.',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      final userId = Supabase.instance.client.auth.currentUser?.id;
+      if (userId != null) {
+        await Supabase.instance.client.functions.invoke('delete-account', body: {'user_id': userId});
+      }
+      SubscriptionService.instance.dispose();
+      await GoogleSignIn().signOut();
+      await Supabase.instance.client.auth.signOut();
+      await LocalDB.instance.clearAllLocalData();
+      if (mounted) Navigator.of(context).pushNamedAndRemoveUntil('/login', (route) => false);
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+    }
+  }
+
   Future<void> _signOut() async {
     try {
       SubscriptionService.instance.dispose();
@@ -270,6 +305,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   S.logOut,
                   style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
                 ),
+              ),
+            ),
+
+            const SizedBox(height: 8),
+
+            TextButton(
+              onPressed: _deleteAccount,
+              child: const Text(
+                'Delete Account',
+                style: TextStyle(color: Colors.red, fontSize: 13),
               ),
             ),
 

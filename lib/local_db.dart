@@ -1806,6 +1806,15 @@ class LocalDB {
       return [];
     }
   }
+
+  Future<void> clearAllLocalData() async {
+    final db = await database;
+    await db.delete('user_progress');
+    await db.delete('user_progress_reverse');
+    await db.delete('daily_stats');
+    await db.delete('attempt_logs');
+    await db.delete('app_meta');
+  }
 }
 
 class TeacherData {
