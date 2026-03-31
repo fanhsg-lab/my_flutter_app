@@ -105,7 +105,7 @@ class Responsive {
   /// Get responsive lesson card dimensions
   Size get lessonCardSize {
     if (isTablet) {
-      return Size(wp(35).clamp(280, 400), hp(55).clamp(350, 500));
+      return Size(wp(52).clamp(380, 540), hp(62).clamp(460, 660));
     }
     // Phone: scale based on available space
     double cardWidth = wp(75).clamp(260, 340);
@@ -122,7 +122,7 @@ class Responsive {
   /// Get responsive progress circle size
   double get progressCircleSize {
     double baseSize = shortestSide * 0.32;
-    return baseSize.clamp(140, 240);
+    return isTablet ? baseSize.clamp(180, 320) : baseSize.clamp(140, 240);
   }
 
   /// Get responsive slot size for survival mode

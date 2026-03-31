@@ -845,7 +845,7 @@ class _MainScreenState extends State<MainScreen> {
                     Expanded(
                       child: PageView.builder(
                         controller: _lessonPageController ??= PageController(
-                          viewportFraction: r.device(phone: 0.85, tablet: 0.6),
+                          viewportFraction: r.device(phone: 0.85, tablet: 0.72),
                           initialPage: _currentLessonIndex,
                         ),
                         itemCount: _lessons.length,

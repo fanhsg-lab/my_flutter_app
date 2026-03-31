@@ -726,6 +726,28 @@ class _SubscriptionSheetState extends State<_SubscriptionSheet> {
 
             // If trial or locked, show subscription options
             if (widget.subState.access != AccessLevel.subscribed) ...[
+              // Features list
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppColors.background,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  children: [
+                    _buildFeatureRow('✓', 'Unlimited access to all lessons & books'),
+                    const SizedBox(height: 8),
+                    _buildFeatureRow('✓', 'All game modes: Flashcards, Quiz & Survival'),
+                    const SizedBox(height: 8),
+                    _buildFeatureRow('✓', 'Progress tracking & statistics'),
+                    const SizedBox(height: 8),
+                    _buildFeatureRow('✓', 'Offline study — no internet needed'),
+                    const SizedBox(height: 8),
+                    _buildFeatureRow('✓', 'Auto-renews unless cancelled'),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
               Row(
                 children: [
                   Expanded(child: _buildPlanCard(S.monthly, _priceFor(kMonthlyProductId, '€1.99'), S.perMonth, kMonthlyProductId)),
@@ -760,6 +782,24 @@ class _SubscriptionSheetState extends State<_SubscriptionSheet> {
               onPressed: _purchasing ? null : _onRestore,
               child: Text(S.restorePurchases, style: TextStyle(color: Colors.grey.shade500, fontSize: 13)),
             ),
+
+            const SizedBox(height: 4),
+
+            // Privacy Policy & Terms of Use
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                TextButton(
+                  onPressed: () => launchUrl(Uri.parse('https://fanhsg-lab.github.io/palabra-privacy-policy/')),
+                  child: Text('Privacy Policy', style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
+                ),
+                Text('·', style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
+                TextButton(
+                  onPressed: () => launchUrl(Uri.parse('https://www.apple.com/legal/internet-services/itunes/dev/stdeula/')),
+                  child: Text('Terms of Use', style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
+                ),
+              ],
+            ),
           ],
         ),
         ),
@@ -776,6 +816,18 @@ class _SubscriptionSheetState extends State<_SubscriptionSheet> {
       case AccessLevel.locked:
         return S.expired;
     }
+  }
+
+  Widget _buildFeatureRow(String icon, String text) {
+    return Row(
+      children: [
+        Text(icon, style: const TextStyle(color: AppColors.primary, fontSize: 14, fontWeight: FontWeight.bold)),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(text, style: const TextStyle(color: Colors.white70, fontSize: 13)),
+        ),
+      ],
+    );
   }
 
   Widget _buildInfoRow(String label, String value) {

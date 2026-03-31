@@ -66,7 +66,30 @@ class _PaywallOverlayState extends State<PaywallOverlay> {
                   ),
                   textAlign: TextAlign.center,
                 ),
-                SizedBox(height: r.spacing(32)),
+                SizedBox(height: r.spacing(16)),
+
+                // What you get
+                Container(
+                  padding: EdgeInsets.all(r.spacing(16)),
+                  decoration: BoxDecoration(
+                    color: AppColors.cardColor,
+                    borderRadius: BorderRadius.circular(r.radius(12)),
+                  ),
+                  child: Column(
+                    children: [
+                      _buildFeatureRow('✓', 'Unlimited access to all lessons & books', r),
+                      SizedBox(height: r.spacing(8)),
+                      _buildFeatureRow('✓', 'All game modes: Flashcards, Quiz & Survival', r),
+                      SizedBox(height: r.spacing(8)),
+                      _buildFeatureRow('✓', 'Progress tracking & statistics', r),
+                      SizedBox(height: r.spacing(8)),
+                      _buildFeatureRow('✓', 'Offline study — no internet needed', r),
+                      SizedBox(height: r.spacing(8)),
+                      _buildFeatureRow('✓', 'Auto-renews unless cancelled', r),
+                    ],
+                  ),
+                ),
+                SizedBox(height: r.spacing(24)),
 
                 // Subscription cards
                 Row(
@@ -249,6 +272,21 @@ class _PaywallOverlayState extends State<PaywallOverlay> {
               ],
             )
           : card,
+    );
+  }
+
+  Widget _buildFeatureRow(String icon, String text, Responsive r) {
+    return Row(
+      children: [
+        Text(icon, style: TextStyle(color: AppColors.primary, fontSize: r.fontSize(14), fontWeight: FontWeight.bold)),
+        SizedBox(width: r.spacing(8)),
+        Expanded(
+          child: Text(
+            text,
+            style: TextStyle(color: Colors.white70, fontSize: r.fontSize(13)),
+          ),
+        ),
+      ],
     );
   }
 
