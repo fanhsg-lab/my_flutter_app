@@ -716,7 +716,7 @@ class _SubscriptionSheetState extends State<_SubscriptionSheet> {
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                   ),
                   onPressed: () => launchUrl(
-                    Uri.parse('https://play.google.com/store/account/subscriptions'),
+                    Uri.parse('https://apps.apple.com/account/subscriptions'),
                     mode: LaunchMode.externalApplication,
                   ),
                   child: Text(S.manageSub, style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold)),
